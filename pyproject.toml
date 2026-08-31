@@ -1,0 +1,42 @@
+[project]
+name = "snsauto"
+version = "0.1.0"
+description = "SNS operations automation: research -> script -> storyboard -> video -> publish -> analyze -> PDCA"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "SQLAlchemy>=2.0",
+    "httpx>=0.27",
+    "Jinja2>=3.1",
+    "typer>=0.12",
+    "rich>=13.7",
+    "python-dateutil>=2.9",
+    "imageio-ffmpeg>=0.5",
+    "Pillow>=10.2",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.39"]
+pdf = ["playwright>=1.44"]
+dev = ["pytest>=8.1", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+snsauto = "snsauto.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+snsauto = ["reporting/templates/*.j2", "reporting/templates/*.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: exercises ffmpeg or a headless browser (deselect with -m 'not slow')",
+]

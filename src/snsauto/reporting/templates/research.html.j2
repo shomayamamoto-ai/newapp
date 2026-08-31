@@ -1,0 +1,99 @@
+{% extends "base.html.j2" %}
+{% block eyebrow %}Keyword Research{% endblock %}
+{% block heading %}「{{ run.keyword }}」{{ run.platform.value | upper }} 上位{{ summary.count }}件分析{% endblock %}
+{% block subheading %}{{ project.name }} ・ collected {{ run.created_at | dt }} UTC ・ source: {{ run.source }}{% endblock %}
+
+{% block content %}
+{% if summary.count == 0 %}
+  <p class="empty">No posts were collected for this run.</p>
+{% else %}
+
+<div class="grid grid-4">
+  <div class="card">
+    <div class="stat-label">Posts analysed</div>
+    <div class="stat">{{ summary.count }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Median engagement</div>
+    <div class="stat">{{ summary.engagement.median | pct }}</div>
+    <div class="stat-note">p90 {{ summary.engagement.p90 | pct }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Winning duration</div>
+    <div class="stat">{{ summary.duration_sec.band_top or '-' }}</div>
+    <div class="stat-note">median all {{ summary.duration_sec.median_all | dur }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Best hours (UTC)</div>
+    <div class="stat">{% for h in summary.best_posting_hours_utc %}{{ h }}{% if not loop.last %} · {% endif %}{% else %}-{% endfor %}</div>
+  </div>
+</div>
+
+<h2>Top performers</h2>
+<p class="sub">Ranked by a composite of engagement rate ({{ weights.engagement | pct(0) }}), view velocity ({{ weights.velocity | pct(0) }}) and reach ({{ weights.reach | pct(0) }}) &mdash; not raw views, so format quality outranks follower count.</p>
+<table>
+  <thead>
+    <tr>
+      <th class="rank">#</th><th>Title</th><th class="num">Views</th>
+      <th class="num">Eng.</th><th class="num">Score</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for post in summary.top_posts %}
+    <tr>
+      <td class="rank">{{ loop.index }}</td>
+      <td><div class="trunc">{{ post.title or post.external_id }}</div></td>
+      <td class="num">{{ post.views | int_ }}</td>
+      <td class="num">{{ post.engagement_rate | pct }}</td>
+      <td class="num">{{ '%.3f' | format(post.score) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if hook_distribution %}
+<h2>Hook archetypes</h2>
+<table>
+  <thead><tr><th>Archetype</th><th class="num">Posts</th><th>Share</th></tr></thead>
+  <tbody>
+  {% for name, count in hook_distribution %}
+    <tr>
+      <td>{{ name }}</td>
+      <td class="num">{{ count }}</td>
+      <td>
+        <div class="bar"><span style="width:{{ (count / summary.count * 100) | round(1) }}%"></span></div>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<div class="grid grid-2">
+  <div>
+    <h2>Frequent hashtags</h2>
+    {% for tag, count in summary.top_hashtags %}
+      <span class="tag">#{{ tag }} <strong>{{ count }}</strong></span>
+    {% else %}
+      <p class="empty">No hashtags found.</p>
+    {% endfor %}
+  </div>
+  <div>
+    <h2>Words in winning posts</h2>
+    {% for word, count in summary.winning_words %}
+      <span class="tag">{{ word }} <strong>{{ count }}</strong></span>
+    {% else %}
+      <p class="empty">Not enough text to analyse.</p>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="note">
+  <strong>How to use this:</strong> target the
+  {{ summary.duration_sec.band_top or 'observed' }} duration band, open with the
+  dominant hook archetype above, and beat
+  {{ summary.engagement.median | pct }} engagement to place in the top half of
+  this keyword.
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,100 @@
+{% extends "base.html.j2" %}
+{% block eyebrow %}PDCA Cycle{% endblock %}
+{% block heading %}{{ cycle.title }}{% endblock %}
+{% block subheading %}
+  {{ project.name }} ・ stage <strong>{{ cycle.stage.value | upper }}</strong>
+  {% if cycle.verdict %}<span class="pill {{ cycle.verdict }}">{{ cycle.verdict }}</span>{% endif %}
+{% endblock %}
+
+{% block content %}
+<h2>Plan</h2>
+<div class="note"><strong>Hypothesis:</strong> {{ cycle.hypothesis or 'not stated' }}</div>
+
+{% if cycle.target %}
+<div class="grid grid-3">
+  <div class="card">
+    <div class="stat-label">Metric</div>
+    <div class="stat" style="font-size:15px">{{ cycle.target.metric | default('-') }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Target</div>
+    <div class="stat">{{ cycle.target.target | default('-') }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Baseline</div>
+    <div class="stat">{{ cycle.target.baseline | default('-') }}</div>
+  </div>
+</div>
+{% endif %}
+
+{% if cycle.actions %}
+<h3>Planned actions</h3>
+<ul class="tight">{% for a in cycle.actions %}<li>{{ a }}</li>{% endfor %}</ul>
+{% endif %}
+
+<h2>Do</h2>
+<p class="sub">{{ (cycle.publication_ids or []) | length }} publication(s) attached to this cycle.</p>
+
+<h2>Check</h2>
+{% set ev = (cycle.result or {}).get('evaluation') %}
+{% if ev %}
+  <div class="grid grid-4">
+    <div class="card">
+      <div class="stat-label">Verdict</div>
+      <div class="stat" style="font-size:15px">{{ ev.verdict }}</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Actual</div>
+      <div class="stat">{{ ev.actual | default('-') }}</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">Target</div>
+      <div class="stat">{{ ev.target | default('-') }}</div>
+    </div>
+    <div class="card">
+      <div class="stat-label">vs baseline</div>
+      <div class="stat">{{ ev.delta_vs_baseline | default('-') | round(4) if ev.delta_vs_baseline is number else '-' }}</div>
+    </div>
+  </div>
+  <div class="note">{{ ev.reason }}</div>
+{% else %}
+  <p class="empty">Not measured yet.</p>
+{% endif %}
+
+{% set posts = (cycle.result or {}).get('per_post') %}
+{% if posts %}
+<table>
+  <thead><tr><th>Platform</th><th class="num">Views</th><th class="num">Eng.</th><th class="num">Views/hr</th></tr></thead>
+  <tbody>
+  {% for row in posts %}
+    <tr>
+      <td>{{ row.platform | upper }}</td>
+      <td class="num">{{ row.views | int_ }}</td>
+      <td class="num">{{ row.engagement_rate | pct }}</td>
+      <td class="num">{{ row.views_per_hour | int_ }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Act</h2>
+{% if cycle.learnings %}<div class="note"><strong>Learnings:</strong> {{ cycle.learnings }}</div>{% endif %}
+{% if cycle.next_actions %}
+<h3>Next actions</h3>
+<table>
+  <thead><tr><th>Action</th><th>Why</th><th>Priority</th></tr></thead>
+  <tbody>
+  {% for a in cycle.next_actions %}
+    <tr>
+      <td>{{ a.action if a is mapping else a }}</td>
+      <td>{{ a.reason if a is mapping else '' }}</td>
+      <td>{{ a.priority if a is mapping else '' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <p class="empty">Cycle not closed yet.</p>
+{% endif %}
+{% endblock %}

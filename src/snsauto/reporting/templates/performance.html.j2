@@ -1,0 +1,71 @@
+{% extends "base.html.j2" %}
+{% block eyebrow %}Performance{% endblock %}
+{% block heading %}{{ title | default('Performance Report') }}{% endblock %}
+{% block subheading %}{{ project.name }} ・ {{ publications | length }} publications tracked{% endblock %}
+
+{% block content %}
+{% if not rows %}
+  <p class="empty">No publications with collected metrics yet. Run <code>snsauto metrics collect</code> after publishing.</p>
+{% else %}
+
+<div class="grid grid-4">
+  <div class="card">
+    <div class="stat-label">Total views</div>
+    <div class="stat">{{ totals.views | int_ }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Mean engagement</div>
+    <div class="stat">{{ totals.engagement_rate | pct }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Posts measured</div>
+    <div class="stat">{{ rows | length }}</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Platforms</div>
+    <div class="stat">{{ breakdown | length }}</div>
+  </div>
+</div>
+
+<h2>By platform</h2>
+<table>
+  <thead>
+    <tr><th>Platform</th><th class="num">Posts</th><th class="num">Views</th>
+        <th class="num">Median views</th><th class="num">Mean eng.</th></tr>
+  </thead>
+  <tbody>
+  {% for name, data in breakdown.items() %}
+    <tr>
+      <td><strong>{{ name | upper }}</strong></td>
+      <td class="num">{{ data.posts }}</td>
+      <td class="num">{{ data.total_views | int_ }}</td>
+      <td class="num">{{ data.median_views | int_ }}</td>
+      <td class="num">{{ data.mean_engagement_rate | pct }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Every post</h2>
+<table>
+  <thead>
+    <tr><th>Platform</th><th class="num">Views</th><th class="num">Likes</th>
+        <th class="num">Comments</th><th class="num">Eng.</th>
+        <th class="num">Views/hr</th><th class="num">Age</th></tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td>{{ row.platform | upper }}</td>
+      <td class="num">{{ row.views | int_ }}</td>
+      <td class="num">{{ row.likes | int_ }}</td>
+      <td class="num">{{ row.comments | int_ }}</td>
+      <td class="num">{{ row.engagement_rate | pct }}</td>
+      <td class="num">{{ row.views_per_hour | int_ }}</td>
+      <td class="num">{{ row.age_hours }}h</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}
