@@ -1,0 +1,64 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / <a href="/projects/{{ project.id }}">{{ project.name }}</a> / 調査</div>{% endblock %}
+{% block heading %}「{{ run.keyword }}」{{ run.platform.value | upper }} 上位{{ summary.count }}件{% endblock %}
+{% block subheading %}{{ run.created_at | dt }} 取得 ・ source: {{ run.source }}{% endblock %}
+{% block actions %}<a class="btn ghost" href="/runs/{{ run.id }}/report">レポート</a>{% endblock %}
+
+{% block content %}
+{% if summary.count == 0 %}
+<p class="empty">この調査には投稿がありません。</p>
+{% else %}
+<div class="grid g4">
+  <div class="card"><div class="stat-label">分析件数</div><div class="stat">{{ summary.count }}</div></div>
+  <div class="card"><div class="stat-label">中央値エンゲージ</div><div class="stat">{{ summary.engagement.median | pct }}</div>
+    <div class="stat-note">p90 {{ summary.engagement.p90 | pct }}</div></div>
+  <div class="card"><div class="stat-label">勝ちパターンの尺</div><div class="stat">{{ summary.duration_sec.band_top or '-' }}</div>
+    <div class="stat-note">全体中央値 {{ summary.duration_sec.median_all | dur }}</div></div>
+  <div class="card"><div class="stat-label">投稿時刻 (UTC)</div>
+    <div class="stat">{% for h in summary.best_posting_hours_utc %}{{ h }}{% if not loop.last %}·{% endif %}{% else %}-{% endfor %}</div></div>
+</div>
+
+<h2>上位パフォーマー</h2>
+<p class="sub" style="margin-bottom:8px">エンゲージ率{{ weights.engagement | pct(0) }}・伸び速度{{ weights.velocity | pct(0) }}・到達{{ weights.reach | pct(0) }}の合成スコア順。再生数順ではありません。</p>
+<table>
+  <thead><tr><th class="rank">#</th><th>タイトル</th><th class="num">再生</th>
+             <th class="num">エンゲージ</th><th class="num">スコア</th><th class="num">尺</th><th>フック</th></tr></thead>
+  <tbody>
+  {% for post in posts %}
+    <tr>
+      <td class="rank">{{ post.rank }}</td>
+      <td><div class="trunc">{% if post.url %}<a href="{{ post.url }}" target="_blank" rel="noopener">{{ post.title or post.external_id }}</a>{% else %}{{ post.title or post.external_id }}{% endif %}</div></td>
+      <td class="num">{{ post.views | int_ }}</td>
+      <td class="num">{{ post.engagement_rate | pct }}</td>
+      <td class="num">{{ '%.3f' | format(post.score) }}</td>
+      <td class="num">{{ post.duration_sec | dur }}</td>
+      <td>{% if post.structure %}<span class="pill mute">{{ post.structure.hook_type }}</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if hook_distribution %}
+<h2>フック類型</h2>
+<table>
+  <thead><tr><th>類型</th><th class="num">件数</th><th>比率</th></tr></thead>
+  <tbody>
+  {% for name, count in hook_distribution %}
+    <tr><td>{{ name }}</td><td class="num">{{ count }}</td>
+        <td><div class="bar"><span style="width:{{ (count / analysed * 100) | round(1) }}%"></span></div></td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="sub">上位{{ analysed }}件を構成分析した結果</p>
+{% endif %}
+
+<div class="grid g2">
+  <div><h2>頻出ハッシュタグ</h2>
+    {% for tag, count in summary.top_hashtags %}<span class="tag">#{{ tag }} <strong>{{ count }}</strong></span>
+    {% else %}<p class="sub">なし</p>{% endfor %}</div>
+  <div><h2>上位投稿の頻出語</h2>
+    {% for word, count in summary.winning_words %}<span class="tag">{{ word }} <strong>{{ count }}</strong></span>
+    {% else %}<p class="sub">なし</p>{% endfor %}</div>
+</div>
+{% endif %}
+{% endblock %}

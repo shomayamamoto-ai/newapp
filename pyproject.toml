@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 llm = ["anthropic>=0.39"]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 pdf = ["playwright>=1.44"]
 dev = ["pytest>=8.1", "pytest-asyncio>=0.23"]
 
@@ -32,7 +33,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-snsauto = ["reporting/templates/*.j2", "reporting/templates/*.css"]
+snsauto = ["reporting/templates/*.j2", "web/templates/*.j2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

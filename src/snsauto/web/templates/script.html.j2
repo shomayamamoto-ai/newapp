@@ -1,0 +1,72 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / <a href="/projects/{{ project.id }}">{{ project.name }}</a> / 台本</div>{% endblock %}
+{% block heading %}{{ script.title }}{% endblock %}
+{% block subheading %}{{ script.platform.value | upper }} ・ {{ script.target_duration_sec | dur }} ・ {{ script.lines | length }} ビート{% endblock %}
+
+{% block content %}
+<div class="grid" style="grid-template-columns:minmax(0,1fr) 280px">
+  <div>
+    {% if script.hook %}<div class="note"><strong>フック:</strong> {{ script.hook }}</div>{% endif %}
+
+    <h2>台本</h2>
+    {% for line in script.lines %}
+    <div class="beat">
+      <div class="t">{{ '%.1f' | format(line.start) }}<br>{{ '%.1f' | format(line.end) }}</div>
+      <div>
+        <div class="telop">{{ line.telop }}</div>
+        {% if line.narration and line.narration != line.telop %}<div class="narr">{{ line.narration }}</div>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+
+    {% if storyboard %}
+    <h2>絵コンテ <span class="sub" style="font-weight:400">— {{ storyboard.shots | length }} カット ・ {{ storyboard.aspect_ratio }}</span></h2>
+    <div class="shots">
+      {% for shot in storyboard.shots %}
+      <div class="shot">
+        {% if shot.image_path %}<img src="/media/shot/{{ shot.id }}" alt="カット{{ shot.index }}" loading="lazy">
+        {% else %}<div style="aspect-ratio:9/16;background:var(--panel-2);border-radius:8px"></div>{% endif %}
+        <div class="meta"><span>#{{ shot.index }}</span><span>{{ shot.duration | dur }}</span></div>
+        <div class="telop">{{ shot.telop }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if storyboard.style %}<p class="sub" style="margin-top:8px">スタイル: {{ storyboard.style }}</p>{% endif %}
+    {% endif %}
+
+    {% if script.rationale %}
+    <h2>生成根拠</h2>
+    <div class="note">{{ script.rationale }}</div>
+    {% endif %}
+  </div>
+
+  <aside>
+    <h3 style="margin-top:0">プレビュー</h3>
+    {% if render %}
+      <video controls preload="metadata" poster="{% if storyboard and storyboard.shots %}/media/shot/{{ storyboard.shots[0].id }}{% endif %}">
+        <source src="/media/render/{{ render.id }}" type="video/mp4">
+      </video>
+      <div class="card" style="margin-top:9px">
+        <div class="row" style="justify-content:space-between;font-size:11px">
+          <span class="sub">尺</span><strong>{{ render.duration_sec | dur }}</strong></div>
+        <div class="row" style="justify-content:space-between;font-size:11px">
+          <span class="sub">解像度</span><strong>{{ render.width }}×{{ render.height }}</strong></div>
+        <div class="row" style="justify-content:space-between;font-size:11px">
+          <span class="sub">fps</span><strong>{{ render.fps }}</strong></div>
+        <div class="row" style="justify-content:space-between;font-size:11px">
+          <span class="sub">テロップ</span><strong>{{ render.meta.get('telop_cues', 0) }} 箇所</strong></div>
+      </div>
+      <a class="btn ghost" style="margin-top:8px;width:100%;text-align:center" href="/media/render/{{ render.id }}?download=1">ダウンロード</a>
+    {% else %}
+      <p class="empty">動画未生成<br><code style="font-size:10px">snsauto create video {{ script.id }}</code></p>
+    {% endif %}
+
+    {% if script.hashtags %}
+    <h3>ハッシュタグ</h3>
+    {% for tag in script.hashtags %}<span class="tag">#{{ tag | trim('#') }}</span>{% endfor %}
+    {% endif %}
+
+    {% if script.cta %}<h3>CTA</h3><p style="font-size:12px">{{ script.cta }}</p>{% endif %}
+  </aside>
+</div>
+{% endblock %}

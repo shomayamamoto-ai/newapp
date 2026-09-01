@@ -1,0 +1,95 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / {{ project.name }}</div>{% endblock %}
+{% block heading %}{{ project.name }}{% endblock %}
+{% block subheading %}{{ project.description or '説明なし' }}{% endblock %}
+{% block actions %}<a class="btn ghost" href="/projects/{{ project.id }}/report">実績レポート</a>{% endblock %}
+
+{% block content %}
+<div class="grid g4">
+  <div class="card"><div class="stat-label">総再生数</div><div class="stat">{{ perf.views | int_ }}</div></div>
+  <div class="card"><div class="stat-label">平均エンゲージ率</div><div class="stat">{{ perf.engagement_rate | pct }}</div>
+    <div class="stat-note">計測済み {{ perf.measured }} 件</div></div>
+  <div class="card"><div class="stat-label">動画</div><div class="stat">{{ renders | length }}</div></div>
+  <div class="card"><div class="stat-label">PDCA</div><div class="stat">{{ project.pdca_cycles | length }}</div></div>
+</div>
+
+<h2>調査</h2>
+{% if project.research_runs %}
+<table>
+  <thead><tr><th>キーワード</th><th>プラットフォーム</th><th class="num">件数</th>
+             <th class="num">中央値エンゲージ</th><th>勝ち尺</th><th>日時</th></tr></thead>
+  <tbody>
+  {% for row in runs %}
+    <tr>
+      <td><a href="/runs/{{ row.run.id }}">{{ row.run.keyword }}</a></td>
+      <td><span class="pill mute">{{ row.run.platform.value }}</span></td>
+      <td class="num">{{ row.run.posts | length }}</td>
+      <td class="num">{{ row.median_engagement | pct }}</td>
+      <td>{{ row.band or '-' }}</td>
+      <td class="sub">{{ row.run.created_at | dt }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">調査がありません。</p>{% endif %}
+
+<h2>台本と動画</h2>
+{% if scripts %}
+<table>
+  <thead><tr><th>タイトル</th><th>プラットフォーム</th><th class="num">尺</th>
+             <th class="num">ビート</th><th>絵コンテ</th><th>動画</th></tr></thead>
+  <tbody>
+  {% for row in scripts %}
+    <tr>
+      <td><a href="/scripts/{{ row.script.id }}">{{ row.script.title }}</a></td>
+      <td><span class="pill mute">{{ row.script.platform.value }}</span></td>
+      <td class="num">{{ row.script.target_duration_sec | dur }}</td>
+      <td class="num">{{ row.script.lines | length }}</td>
+      <td class="num">{{ row.shots }}</td>
+      <td>{% if row.render %}<span class="pill ok">{{ row.render.duration_sec | dur }}</span>{% else %}<span class="pill mute">未生成</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">台本がありません。</p>{% endif %}
+
+<h2>投稿</h2>
+{% if publications %}
+<table>
+  <thead><tr><th>プラットフォーム</th><th>状態</th><th class="num">再生</th><th class="num">いいね</th>
+             <th class="num">エンゲージ率</th><th>リンク</th></tr></thead>
+  <tbody>
+  {% for row in publications %}
+    <tr>
+      <td>{{ row.publication.platform.value | upper }}</td>
+      <td><span class="pill {{ row.publication.status.value }}">{{ row.publication.status.value }}</span></td>
+      <td class="num">{{ row.summary.views | int_ if row.summary.has_data else '-' }}</td>
+      <td class="num">{{ row.summary.likes | int_ if row.summary.has_data else '-' }}</td>
+      <td class="num">{{ row.summary.engagement_rate | pct if row.summary.has_data else '-' }}</td>
+      <td>{% if row.publication.external_url %}<a href="{{ row.publication.external_url }}" target="_blank" rel="noopener">開く</a>
+          {% elif row.publication.error %}<span class="sub">{{ row.publication.error | truncate(46) }}</span>
+          {% else %}<span class="sub">-</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">投稿がありません。</p>{% endif %}
+
+<h2>PDCA</h2>
+{% if project.pdca_cycles %}
+<table>
+  <thead><tr><th>タイトル</th><th>段階</th><th>判定</th><th>仮説</th><th class="num">対象</th></tr></thead>
+  <tbody>
+  {% for cycle in project.pdca_cycles %}
+    <tr>
+      <td><a href="/cycles/{{ cycle.id }}">{{ cycle.title }}</a></td>
+      <td><span class="pill mute">{{ cycle.stage.value }}</span></td>
+      <td>{% if cycle.verdict %}<span class="pill {{ cycle.verdict }}">{{ cycle.verdict }}</span>{% else %}<span class="sub">-</span>{% endif %}</td>
+      <td class="trunc sub">{{ cycle.hypothesis }}</td>
+      <td class="num">{{ (cycle.publication_ids or []) | length }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">PDCAサイクルがありません。</p>{% endif %}
+{% endblock %}

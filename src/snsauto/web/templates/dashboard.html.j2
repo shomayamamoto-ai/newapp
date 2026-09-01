@@ -1,0 +1,60 @@
+{% extends "layout.html.j2" %}
+{% block heading %}ダッシュボード{% endblock %}
+{% block subheading %}{{ projects | length }} プロジェクト ・ {{ totals.runs }} 調査 ・ {{ totals.renders }} 動画 ・ {{ totals.publications }} 投稿{% endblock %}
+
+{% block content %}
+<div class="grid g4">
+  <div class="card"><div class="stat-label">競合データ</div>
+    <div class="stat">{{ totals.posts | int_ }}</div><div class="stat-note">{{ totals.runs }} 回の調査</div></div>
+  <div class="card"><div class="stat-label">台本</div>
+    <div class="stat">{{ totals.scripts }}</div><div class="stat-note">{{ totals.storyboards }} 絵コンテ</div></div>
+  <div class="card"><div class="stat-label">レンダリング済み動画</div>
+    <div class="stat">{{ totals.renders }}</div><div class="stat-note">{{ totals.render_seconds | dur }} 合計</div></div>
+  <div class="card"><div class="stat-label">PDCAサイクル</div>
+    <div class="stat">{{ totals.cycles }}</div><div class="stat-note">{{ totals.open_cycles }} 進行中</div></div>
+</div>
+
+<h2>プロジェクト</h2>
+{% if projects %}
+<div class="grid g3">
+  {% for row in projects %}
+  <a class="card link" href="/projects/{{ row.project.id }}" style="color:inherit">
+    <div class="spread" style="align-items:center">
+      <strong style="font-size:14px">{{ row.project.name }}</strong>
+      <span class="pill brand">{{ row.runs }} 調査</span>
+    </div>
+    <p class="sub" style="margin:5px 0 9px">{{ row.project.description or '説明なし' }}</p>
+    <div class="row" style="gap:14px;font-size:11px;color:var(--ink-3)">
+      <span>台本 <strong style="color:var(--ink)">{{ row.scripts }}</strong></span>
+      <span>動画 <strong style="color:var(--ink)">{{ row.renders }}</strong></span>
+      <span>投稿 <strong style="color:var(--ink)">{{ row.publications }}</strong></span>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty">プロジェクトがありません。<code>snsauto project create &lt;name&gt;</code> で作成してください。</p>
+{% endif %}
+
+<h2>最近の調査</h2>
+{% if recent_runs %}
+<table>
+  <thead><tr><th>キーワード</th><th>プラットフォーム</th><th>プロジェクト</th>
+             <th class="num">件数</th><th>取得元</th><th>日時</th></tr></thead>
+  <tbody>
+  {% for run in recent_runs %}
+    <tr>
+      <td><a href="/runs/{{ run.id }}">{{ run.keyword }}</a></td>
+      <td><span class="pill mute">{{ run.platform.value }}</span></td>
+      <td>{{ run.project.name }}</td>
+      <td class="num">{{ run.posts | length }}</td>
+      <td class="mono">{{ run.source }}</td>
+      <td class="sub">{{ run.created_at | dt }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">調査履歴がありません。</p>
+{% endif %}
+{% endblock %}

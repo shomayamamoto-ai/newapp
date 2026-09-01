@@ -1,0 +1,60 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / <a href="/projects/{{ project.id }}">{{ project.name }}</a> / PDCA</div>{% endblock %}
+{% block heading %}{{ cycle.title }}{% endblock %}
+{% block subheading %}段階 {{ cycle.stage.value | upper }}{% if cycle.verdict %} ・ 判定 {{ cycle.verdict }}{% endif %}{% endblock %}
+{% block actions %}<a class="btn ghost" href="/cycles/{{ cycle.id }}/report">レポート</a>{% endblock %}
+
+{% block content %}
+<h2>Plan</h2>
+<div class="note"><strong>仮説:</strong> {{ cycle.hypothesis or '未設定' }}</div>
+{% if cycle.target %}
+<div class="grid g3">
+  <div class="card"><div class="stat-label">指標</div><div class="stat" style="font-size:14px">{{ cycle.target.metric or '-' }}</div></div>
+  <div class="card"><div class="stat-label">目標</div><div class="stat">{{ cycle.target.target or '-' }}</div></div>
+  <div class="card"><div class="stat-label">ベースライン</div><div class="stat">{{ cycle.target.baseline if cycle.target.baseline is not none else '-' }}</div></div>
+</div>
+{% endif %}
+{% if cycle.actions %}<h3>実施予定</h3><ul style="font-size:12px">{% for a in cycle.actions %}<li>{{ a }}</li>{% endfor %}</ul>{% endif %}
+
+<h2>Check</h2>
+{% set ev = (cycle.result or {}).get('evaluation') %}
+{% if ev %}
+<div class="grid g4">
+  <div class="card"><div class="stat-label">判定</div>
+    <div class="stat" style="font-size:15px"><span class="pill {{ ev.verdict }}">{{ ev.verdict }}</span></div></div>
+  <div class="card"><div class="stat-label">実測</div><div class="stat">{{ ev.actual if ev.actual is not none else '-' }}</div></div>
+  <div class="card"><div class="stat-label">目標</div><div class="stat">{{ ev.target if ev.target is not none else '-' }}</div></div>
+  <div class="card"><div class="stat-label">対ベースライン</div>
+    <div class="stat">{{ '%+.4f' | format(ev.delta_vs_baseline) if ev.delta_vs_baseline is number else '-' }}</div></div>
+</div>
+<div class="note">{{ ev.reason }}</div>
+{% else %}<p class="empty">未計測です。</p>{% endif %}
+
+{% set posts = (cycle.result or {}).get('per_post') %}
+{% if posts %}
+<table>
+  <thead><tr><th>プラットフォーム</th><th class="num">再生</th><th class="num">エンゲージ率</th><th class="num">再生/時</th></tr></thead>
+  <tbody>
+  {% for row in posts %}
+    <tr><td>{{ row.platform | upper }}</td><td class="num">{{ row.views | int_ }}</td>
+        <td class="num">{{ row.engagement_rate | pct }}</td><td class="num">{{ row.views_per_hour | int_ }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Act</h2>
+{% if cycle.learnings %}<div class="note"><strong>学び:</strong> {{ cycle.learnings }}</div>{% endif %}
+{% if cycle.next_actions %}
+<table>
+  <thead><tr><th>次のアクション</th><th>理由</th><th>優先度</th></tr></thead>
+  <tbody>
+  {% for a in cycle.next_actions %}
+    <tr><td>{{ a.action if a is mapping else a }}</td>
+        <td class="sub">{{ a.reason if a is mapping else '' }}</td>
+        <td>{% if a is mapping and a.priority %}<span class="pill mute">{{ a.priority }}</span>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">サイクル未クローズです。</p>{% endif %}
+{% endblock %}

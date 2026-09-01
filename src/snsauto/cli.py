@@ -54,6 +54,30 @@ def init():
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    reload: bool = typer.Option(False, "--reload"),
+):
+    """Start the web UI."""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter(
+            "web extra not installed. Run: pip install 'snsauto[web]'"
+        ) from exc
+
+    settings = get_settings()
+    settings.ensure_workspace()
+    init_db()
+    console.print(f"[green]snsauto[/green] http://{host}:{port}")
+    uvicorn.run(
+        "snsauto.web.app:create_app",
+        host=host, port=port, reload=reload, factory=True,
+    )
+
+
+@app.command()
 def doctor():
     """Show what this installation can actually do right now."""
     from .llm import build_client

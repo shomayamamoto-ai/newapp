@@ -1,0 +1,42 @@
+{% extends "layout.html.j2" %}
+{% block heading %}接続状況{% endblock %}
+{% block subheading %}いまこのインストールで実際にできること{% endblock %}
+
+{% block content %}
+<h2>プラットフォーム</h2>
+<table>
+  <thead><tr><th>プラットフォーム</th><th>検索</th><th>投稿</th><th>実績取得</th><th>必要なもの</th></tr></thead>
+  <tbody>
+  {% for name, caps in matrix.items() %}
+    <tr>
+      <td><strong>{{ name | upper }}</strong></td>
+      {% for cap in ['search','publish','insights'] %}
+        <td>{% if caps[cap] %}<span class="pill ok">有効</span>{% else %}<span class="pill mute">未設定</span>{% endif %}</td>
+      {% endfor %}
+      <td class="sub">{{ requirements[name] }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div class="note warn">
+  <strong>TikTokの検索は原理的に使えません。</strong>
+  キーワード検索の公開APIが存在せず、Research APIは承認された学術機関限定です。
+  スクレイピングは利用規約違反のため実装していません。
+  <code>snsauto research import &lt;csv&gt;</code> で手動収集またはベンダー取得データを取り込んでください。
+</div>
+
+<h2>ローカル環境</h2>
+<div class="grid g2">
+  {% for item in environment %}
+  <div class="card">
+    <div class="stat-label">{{ item.name }}</div>
+    <div style="font-size:12px;margin-top:3px">
+      {% if item.ok %}<span class="pill ok">利用可</span>{% else %}<span class="pill warn">未設定</span>{% endif %}
+      <span class="mono" style="color:var(--ink-3)">{{ item.detail }}</span>
+    </div>
+    <p class="sub" style="margin-top:5px">{{ item.note }}</p>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
