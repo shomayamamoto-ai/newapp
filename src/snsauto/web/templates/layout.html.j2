@@ -33,7 +33,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);
      font-size:13.5px;line-height:1.6;-webkit-font-smoothing:antialiased}
 a{color:var(--brand);text-decoration:none}
 a:hover{text-decoration:underline}
-.shell{display:grid;grid-template-columns:224px 1fr;min-height:100vh;
+.shell{display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100vh;
   /* Paints the sidebar column full height: the nav is sticky at 100vh, so on a
      long page its own background would stop short of the fold. */
   background:linear-gradient(90deg,var(--panel) 224px,var(--bg) 224px)}
@@ -49,7 +49,7 @@ nav.side a{display:block;padding:6px 10px;border-radius:7px;color:var(--ink-2);
            font-size:12.5px;margin-bottom:1px}
 nav.side a:hover{background:var(--panel-2);text-decoration:none;color:var(--ink)}
 nav.side a.active{background:var(--brand-soft);color:var(--brand);font-weight:600}
-main{padding:26px 30px 60px;max-width:1180px}
+main{padding:26px 30px 60px;max-width:1180px;min-width:0}
 header.head{margin-bottom:22px}
 .crumb{font-size:11px;color:var(--ink-3);margin-bottom:5px}
 h1{font-size:22px;margin:0 0 4px;letter-spacing:-.02em;line-height:1.25}
@@ -61,6 +61,8 @@ h3{font-size:12px;margin:16px 0 7px;color:var(--ink-2);text-transform:uppercase;
 .g3{grid-template-columns:repeat(3,1fr)}
 .g4{grid-template-columns:repeat(4,1fr)}
 @media(max-width:900px){.shell{grid-template-columns:1fr;background:var(--bg)}nav.side{position:static;height:auto}
+  /* Narrow screens: let the table scroll inside itself instead of widening the page. */
+  main table{display:block;overflow-x:auto;white-space:nowrap}
   .g4,.g3{grid-template-columns:repeat(2,1fr)}main{padding:18px}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
 .card.link:hover{border-color:var(--brand)}
@@ -68,6 +70,7 @@ h3{font-size:12px;margin:16px 0 7px;color:var(--ink-2);text-transform:uppercase;
 .stat{font-size:21px;font-weight:750;letter-spacing:-.025em;margin-top:2px;line-height:1.2}
 .stat-note{font-size:10.5px;color:var(--ink-3)}
 table{width:100%;border-collapse:collapse;font-size:12px}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 th{text-align:left;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);
    border-bottom:1.5px solid var(--line);padding:7px 9px;font-weight:700;white-space:nowrap}
 td{padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:middle}
