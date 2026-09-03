@@ -178,3 +178,212 @@ def test_report_routes_render_html(app_env):
         r = client.get(path)
         assert r.status_code == 200
         assert r.text.lstrip().startswith("<!doctype html>")
+
+
+# ---------------------------------------------------------------------------
+# Authenticated UI and action routes
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def secure_env(tmp_path, monkeypatch):
+    """The same app with auth turned on, plus an admin and a viewer."""
+    from snsauto.web.auth import create_user
+
+    db = tmp_path / "secure.db"
+    monkeypatch.setenv("SNSAUTO_DB_URL", f"sqlite:///{db}")
+    monkeypatch.setenv("SNSAUTO_WORKSPACE", str(tmp_path / "ws"))
+
+    import snsauto.db as dbmod
+    from snsauto.config import get_settings
+
+    dbmod._engine = None
+    dbmod._Session = None
+    get_settings.cache_clear()
+
+    settings = Settings(
+        _env_file=None, SNSAUTO_DB_URL=f"sqlite:///{db}",
+        SNSAUTO_WORKSPACE=str(tmp_path / "ws"), SNSAUTO_AUTH_ENABLED=True,
+        SNSAUTO_SECRET_KEY="s" * 40, SNSAUTO_COOKIE_SECURE=False,
+    )
+    settings.ensure_workspace()
+    dbmod.init_db()
+
+    with dbmod.session_scope() as session:
+        project = Project(name="secure", brand_profile={})
+        session.add(project)
+        session.flush()
+        create_user(session, "admin@x.com", "supersecret1", "Admin", "admin")
+        create_user(session, "editor@x.com", "supersecret1", "Editor", "editor")
+        create_user(session, "viewer@x.com", "supersecret1", "Viewer", "viewer")
+        ids = {"project": project.id}
+
+    from snsauto.web import create_app
+
+    def client_for(email: str | None):
+        client = TestClient(create_app(settings))
+        client.get("/login")
+        token = client.cookies.get("snsauto_csrf")
+        if email:
+            client.post(
+                "/login",
+                data={"email": email, "password": "supersecret1", "csrf_token": token},
+                follow_redirects=False,
+            )
+        return client, token
+
+    yield client_for, ids
+
+    get_settings.cache_clear()
+    dbmod._engine = None
+    dbmod._Session = None
+
+
+class TestLoginGate:
+    def test_anonymous_pages_redirect_to_login(self, secure_env):
+        """A signed-out browser must land on the login form, not raw JSON."""
+        client_for, _ = secure_env
+        client, _ = client_for(None)
+        for path in ("/", "/jobs", "/capabilities"):
+            response = client.get(path, follow_redirects=False)
+            assert response.status_code == 303
+            assert response.headers["location"] == "/login"
+
+    def test_anonymous_api_calls_get_a_status_code(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for(None)
+        assert client.get("/api/projects", follow_redirects=False).status_code == 401
+
+    def test_login_page_is_reachable(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for(None)
+        assert client.get("/login").status_code == 200
+
+    def test_login_sets_a_session_cookie(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        assert "snsauto_session" in client.cookies
+        assert client.get("/").status_code == 200
+
+    def test_login_without_csrf_is_rejected(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for(None)
+        response = client.post(
+            "/login", data={"email": "admin@x.com", "password": "supersecret1"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 400
+
+    def test_bad_password_and_unknown_user_look_identical(self, secure_env):
+        """Different messages would let an attacker enumerate accounts."""
+        client_for, _ = secure_env
+        client, token = client_for(None)
+        wrong = client.post("/login", data={"email": "admin@x.com", "password": "no",
+                                            "csrf_token": token}, follow_redirects=False)
+        ghost = client.post("/login", data={"email": "ghost@x.com", "password": "no",
+                                            "csrf_token": token}, follow_redirects=False)
+        assert wrong.headers["location"] == ghost.headers["location"]
+        assert "snsauto_session" not in client.cookies
+
+    def test_logout_clears_access(self, secure_env):
+        client_for, _ = secure_env
+        client, token = client_for("admin@x.com")
+        client.post("/logout", data={"csrf_token": token}, follow_redirects=False)
+        assert client.get("/", follow_redirects=False).status_code == 303
+
+
+class TestRoles:
+    def test_viewer_reads_but_cannot_write(self, secure_env):
+        client_for, ids = secure_env
+        client, token = client_for("viewer@x.com")
+        assert client.get("/").status_code == 200
+        assert client.post(f"/projects/{ids['project']}/metrics",
+                           data={"csrf_token": token}).status_code == 403
+
+    def test_editor_writes_but_cannot_publish(self, secure_env):
+        client_for, ids = secure_env
+        client, token = client_for("editor@x.com")
+        assert client.post(f"/projects/{ids['project']}/metrics",
+                           data={"csrf_token": token}).status_code in (303, 200)
+        assert client.post("/renders/1/publish",
+                           data={"platforms": ["tiktok"], "confirm": "PUBLISH",
+                                 "csrf_token": token}).status_code == 403
+
+    def test_actions_require_csrf(self, secure_env):
+        client_for, ids = secure_env
+        client, _ = client_for("admin@x.com")
+        assert client.post(f"/projects/{ids['project']}/metrics", data={}).status_code == 400
+
+
+class TestActions:
+    def test_enqueuing_redirects_with_a_job_id(self, secure_env):
+        client_for, ids = secure_env
+        client, token = client_for("admin@x.com")
+        response = client.post(
+            f"/projects/{ids['project']}/research",
+            data={"keyword": "副業", "platform": "youtube", "limit": 10,
+                  "csrf_token": token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "job=" in response.headers["location"]
+
+    def test_job_status_is_readable(self, secure_env):
+        client_for, ids = secure_env
+        client, token = client_for("admin@x.com")
+        response = client.post(
+            f"/projects/{ids['project']}/metrics", data={"csrf_token": token},
+            follow_redirects=False,
+        )
+        job_id = response.headers["location"].split("job=")[-1]
+        body = client.get(f"/api/jobs/{job_id}").json()
+        assert body["kind"] == "metrics"
+
+    def test_jobs_page_renders(self, secure_env):
+        client_for, ids = secure_env
+        client, token = client_for("admin@x.com")
+        client.post(f"/projects/{ids['project']}/metrics", data={"csrf_token": token})
+        assert "実行履歴" in client.get("/jobs").text
+
+    def test_publish_needs_the_typed_confirmation(self, secure_env, tmp_path):
+        """Posting publicly is irreversible, so one click must not do it."""
+        import snsauto.db as dbmod
+        from snsauto.models import Render
+
+        video = tmp_path / "r.mp4"
+        video.write_bytes(b"\x00" * 8)
+        with dbmod.session_scope() as session:
+            render = Render(storyboard_id=1, path=str(video), duration_sec=5)
+            session.add(render)
+            session.flush()
+            render_id = render.id
+
+        client_for, _ = secure_env
+        client, token = client_for("admin@x.com")
+        assert client.post(f"/renders/{render_id}/publish",
+                           data={"platforms": ["tiktok"], "confirm": "yes",
+                                 "csrf_token": token}).status_code == 400
+
+    def test_publish_needs_a_platform(self, secure_env, tmp_path):
+        import snsauto.db as dbmod
+        from snsauto.models import Render
+
+        video = tmp_path / "r2.mp4"
+        video.write_bytes(b"\x00" * 8)
+        with dbmod.session_scope() as session:
+            render = Render(storyboard_id=1, path=str(video), duration_sec=5)
+            session.add(render)
+            session.flush()
+            render_id = render.id
+
+        client_for, _ = secure_env
+        client, token = client_for("admin@x.com")
+        assert client.post(f"/renders/{render_id}/publish",
+                           data={"confirm": "PUBLISH", "csrf_token": token}
+                           ).status_code == 400
+
+
+def test_localhost_mode_needs_no_login(app_env):
+    """With auth off the UI is open, which is only safe on localhost."""
+    client, _ = app_env
+    assert client.get("/").status_code == 200

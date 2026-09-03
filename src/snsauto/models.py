@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -268,6 +269,11 @@ class Publication(Base, TimestampMixin):
     external_url: Mapped[str | None] = mapped_column(String(600))
     error: Mapped[str | None] = mapped_column(Text)
 
+    # Held by the worker that is publishing this row, so two workers on one
+    # database cannot post the same video twice.
+    claimed_by: Mapped[str | None] = mapped_column(String(120))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     snapshots: Mapped[list["MetricSnapshot"]] = relationship(
         back_populates="publication", cascade="all, delete-orphan"
     )
@@ -330,3 +336,128 @@ class Report(Base, TimestampMixin):
     html_path: Mapped[str | None] = mapped_column(String(600))
     pdf_path: Mapped[str | None] = mapped_column(String(600))
     context: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# ---------------------------------------------------------------------------
+# Visual sourcing, voice, scheduling, experiments and access control
+# ---------------------------------------------------------------------------
+
+
+class VisualMode(str, enum.Enum):
+    """How a shot's picture is produced."""
+
+    STILL = "still"        # generated image + Ken Burns move
+    ANIMATE = "animate"    # image -> video model, the shot actually moves
+    FOOTAGE = "footage"    # real / stock footage matched to the shot
+
+
+class JobStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class ClipAsset(Base, TimestampMixin):
+    """A piece of real or stock footage available to the matcher."""
+
+    __tablename__ = "clip_assets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    path: Mapped[str] = mapped_column(String(600), unique=True)
+    label: Mapped[str | None] = mapped_column(String(300))
+    keywords: Mapped[list] = mapped_column(JSON, default=list)
+    duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    has_audio: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(80), default="local")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    @property
+    def is_vertical(self) -> bool:
+        return self.height > self.width
+
+
+class Experiment(Base, TimestampMixin):
+    """An A/B test: several variants that differ in exactly one dimension."""
+
+    __tablename__ = "experiments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    cycle_id: Mapped[int | None] = mapped_column(ForeignKey("pdca_cycles.id"))
+    name: Mapped[str] = mapped_column(String(300))
+    # The single thing that differs between variants - holding everything else
+    # constant is what makes the comparison mean anything.
+    dimension: Mapped[str] = mapped_column(String(80), default="hook")
+    metric: Mapped[str] = mapped_column(String(80), default="engagement_rate")
+    base_script_id: Mapped[int | None] = mapped_column(ForeignKey("scripts.id"))
+    winner_variant_id: Mapped[int | None] = mapped_column(Integer)
+    conclusion: Mapped[dict] = mapped_column(JSON, default=dict)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    project: Mapped[Project] = relationship()
+    variants: Mapped[list["Variant"]] = relationship(
+        back_populates="experiment", cascade="all, delete-orphan", order_by="Variant.id"
+    )
+
+
+class Variant(Base, TimestampMixin):
+    """One arm of an experiment."""
+
+    __tablename__ = "variants"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id"))
+    script_id: Mapped[int | None] = mapped_column(ForeignKey("scripts.id"))
+    label: Mapped[str] = mapped_column(String(80))
+    # What this arm actually changed, e.g. {"hook": "...", "hook_type": "question"}
+    treatment: Mapped[dict] = mapped_column(JSON, default=dict)
+    publication_ids: Mapped[list] = mapped_column(JSON, default=list)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    experiment: Mapped[Experiment] = relationship(back_populates="variants")
+    script: Mapped["Script | None"] = relationship()
+
+
+class Job(Base, TimestampMixin):
+    """A unit of background work started from the web UI or the worker."""
+
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    kind: Mapped[str] = mapped_column(String(80))
+    status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.QUEUED)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    log: Mapped[list] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Set while a worker holds the job, so two workers cannot run it twice.
+    claimed_by: Mapped[str | None] = mapped_column(String(120))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class User(Base, TimestampMixin):
+    """A login for the web UI. Only used when the UI is exposed beyond localhost."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    name: Mapped[str | None] = mapped_column(String(200))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(40), default="editor")  # admin | editor | viewer
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    @property
+    def can_write(self) -> bool:
+        return self.role in ("admin", "editor")
+
+    @property
+    def can_publish(self) -> bool:
+        return self.role == "admin"

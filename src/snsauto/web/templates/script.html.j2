@@ -4,6 +4,69 @@
 {% block subheading %}{{ script.platform.value | upper }} ・ {{ script.target_duration_sec | dur }} ・ {{ script.lines | length }} ビート{% endblock %}
 
 {% block content %}
+{% if job_id %}<div class="note">処理を開始しました。<a href="/jobs">実行履歴</a>で進行状況を確認できます。</div>{% endif %}
+
+{% if user and user.can_write %}
+<h2 style="margin-top:0">実行</h2>
+<div class="grid g2">
+  <form class="act" method="post" action="/scripts/{{ script.id }}/video">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="f"><label for="vm">映像の作り方</label>
+      <select id="vm" name="visual_mode">
+        <option value="still">静止画＋ズーム</option>
+        <option value="animate">画像→動画生成AI</option>
+        <option value="footage">実写・ストック素材</option>
+        <option value="auto">使える中で最良</option>
+      </select></div>
+    <div class="f" style="flex:1;min-width:130px"><label for="vs">スタイル指定</label>
+      <input id="vs" name="style" placeholder="cinematic, warm light"></div>
+    <div class="f chk">
+      <input id="vn" name="narrate" type="checkbox" value="true">
+      <label for="vn">ナレーション音声をつける</label></div>
+    <button class="btn">動画を生成</button>
+  </form>
+
+  <form class="act" method="post" action="/scripts/{{ script.id }}/experiment">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="f"><label for="ed">A/Bで変える条件</label>
+      <select id="ed" name="dimension">
+        <option value="hook">フック</option>
+        <option value="telop_density">テロップ量</option>
+        <option value="duration">尺</option>
+        <option value="cta">CTA</option>
+        <option value="hashtags">ハッシュタグ</option>
+      </select></div>
+    <div class="f"><label for="ea">案の数</label>
+      <input id="ea" name="arms" type="number" value="2" min="2" max="5" style="width:64px"></div>
+    <button class="btn">A/Bテストを作成</button>
+  </form>
+</div>
+
+{% if render and user.can_publish %}
+<h2>投稿</h2>
+<form class="act danger" method="post" action="/renders/{{ render.id }}/publish">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="f"><label>投稿先</label>
+    <div class="row" style="gap:12px">
+      {% for p in platforms %}
+      <span class="chk" style="display:flex;align-items:center;gap:4px">
+        <input id="pl-{{ p }}" name="platforms" type="checkbox" value="{{ p }}">
+        <label for="pl-{{ p }}">{{ p }}</label></span>
+      {% endfor %}
+    </div></div>
+  <div class="f"><label for="psf">予約日時（空欄なら即時）</label>
+    <input id="psf" name="scheduled_for" type="datetime-local"></div>
+  <div class="f"><label for="pc">確認のため PUBLISH と入力</label>
+    <input id="pc" name="confirm" placeholder="PUBLISH" required style="width:120px"></div>
+  <button class="btn">投稿する</button>
+</form>
+<p class="sub">公開投稿は取り消せません。予約した場合はワーカー
+（<code>snsauto worker run</code>）が時刻になったら実行します。</p>
+{% elif render and auth_enabled %}
+<p class="sub">投稿の実行は管理者権限が必要です。</p>
+{% endif %}
+{% endif %}
+
 <div class="grid" style="grid-template-columns:minmax(0,1fr) 280px">
   <div>
     {% if script.hook %}<div class="note"><strong>フック:</strong> {{ script.hook }}</div>{% endif %}
@@ -55,7 +118,23 @@
           <span class="sub">fps</span><strong>{{ render.fps }}</strong></div>
         <div class="row" style="justify-content:space-between;font-size:11px">
           <span class="sub">テロップ</span><strong>{{ render.meta.get('telop_cues', 0) }} 箇所</strong></div>
+        {% set vis = render.meta.get('visuals') or {} %}
+        {% if vis.produced %}
+        <div class="row" style="justify-content:space-between;font-size:11px">
+          <span class="sub">映像</span>
+          <strong>{% for mode, n in vis.produced.items() %}{{ mode }}×{{ n }}{% if not loop.last %} / {% endif %}{% endfor %}</strong></div>
+        {% endif %}
+        {% if render.meta.get('narrated') %}
+        <div class="row" style="justify-content:space-between;font-size:11px">
+          <span class="sub">音声</span><strong>ナレーションあり</strong></div>
+        {% endif %}
       </div>
+      {% if vis.degraded %}
+      <div class="note warn" style="font-size:11px;margin-top:8px">
+        {{ vis.degraded | length }} カットが指定どおりに作れず静止画に切り替わりました：
+        {% for d in vis.degraded %}#{{ d.shot }} {{ d.why | truncate(60) }}{% if not loop.last %} / {% endif %}{% endfor %}
+      </div>
+      {% endif %}
       <a class="btn ghost" style="margin-top:8px;width:100%;text-align:center" href="/media/render/{{ render.id }}?download=1">ダウンロード</a>
     {% else %}
       <p class="empty">動画未生成<br><code style="font-size:10px">snsauto create video {{ script.id }}</code></p>

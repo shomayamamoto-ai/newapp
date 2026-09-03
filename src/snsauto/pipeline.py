@@ -25,6 +25,8 @@ from .config import get_settings
 from .creative.imagegen import ImageGenerator
 from .creative.script import ScriptService
 from .creative.storyboard import StoryboardService
+from .creative.visuals import VisualResult, VisualSourcer
+from .creative.voice import VoiceService, VoiceTrack
 from .llm import build_client
 from .media.assemble import PLATFORM_SPECS, ShotInput, VideoSpec, assemble_video
 from .models import (
@@ -59,6 +61,8 @@ class PipelineResult:
     script: Script | None = None
     storyboard: Storyboard | None = None
     render: Render | None = None
+    visuals: VisualResult | None = None
+    voice: VoiceTrack | None = None
     publications: list[Publication] = field(default_factory=list)
     report_paths: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
@@ -73,6 +77,8 @@ class PipelineResult:
             "shots": len(self.storyboard.shots) if self.storyboard else 0,
             "video": self.render.path if self.render else None,
             "duration_sec": self.render.duration_sec if self.render else None,
+            "visuals": self.visuals.summary() if self.visuals else None,
+            "voice": self.voice.summary() if self.voice else None,
             "publications": [
                 {"platform": p.platform.value, "status": p.status.value,
                  "url": p.external_url, "error": p.error}
@@ -94,6 +100,8 @@ class Pipeline:
         self.scripts = ScriptService(session, self.llm)
         self.storyboards = StoryboardService(session, self.llm)
         self.images = ImageGenerator(settings=self.settings)
+        self.visuals = VisualSourcer(session, self.settings, images=self.images)
+        self.voice = VoiceService(session, self.settings)
         self.metrics = MetricsCollector(session, self.settings)
         self.pdca = PdcaService(session, self.llm)
         self.reports = ReportService(session, self.settings)
@@ -146,12 +154,26 @@ class Pipeline:
             script, aspect_ratio=aspect_ratio or "9:16", style_hint=style_hint
         )
 
+    def generate_visuals(
+        self, storyboard: Storyboard, mode: str | None = None
+    ) -> VisualResult:
+        """Produce each shot's picture: still, animated clip or matched footage."""
+        out_dir = self.settings.workspace / "assets" / f"storyboard-{storyboard.id}"
+        spec = PLATFORM_SPECS.get(storyboard.script.platform, VideoSpec())
+        return self.visuals.produce(storyboard, out_dir, spec.width, spec.height, mode)
+
     def generate_images(self, storyboard: Storyboard) -> list[Path]:
+        """Stills only. Kept for callers that explicitly want the cheap path."""
         out_dir = self.settings.workspace / "assets" / f"storyboard-{storyboard.id}"
         spec = PLATFORM_SPECS.get(storyboard.script.platform, VideoSpec())
         paths = self.images.render_storyboard(storyboard, out_dir, spec.width, spec.height)
         self.session.flush()
         return paths
+
+    def narrate(self, storyboard: Storyboard, realign: bool = True) -> VoiceTrack:
+        """Synthesise narration and re-time the shots to the real speech."""
+        out_dir = self.settings.workspace / "assets" / f"storyboard-{storyboard.id}" / "voice"
+        return self.voice.narrate(storyboard, out_dir, realign=realign)
 
     def render_video(
         self,
@@ -159,6 +181,7 @@ class Pipeline:
         bgm: str | Path | None = None,
         voice: str | Path | None = None,
         ken_burns: bool = True,
+        visual_summary: dict | None = None,
     ) -> Render:
         platform = storyboard.script.platform
         spec = PLATFORM_SPECS.get(platform, VideoSpec())
@@ -186,7 +209,12 @@ class Pipeline:
             storyboard_id=storyboard.id, path=info["path"],
             width=info["width"], height=info["height"], fps=info["fps"],
             duration_sec=info["duration_sec"], preset=platform.value,
-            meta={"shots": info["shots"], "telop_cues": info["telop_cues"]},
+            meta={
+                "shots": info["shots"],
+                "telop_cues": info["telop_cues"],
+                "visuals": visual_summary or {},
+                "narrated": bool(voice),
+            },
         )
         self.session.add(render)
         self.session.flush()
@@ -263,6 +291,8 @@ class Pipeline:
         bgm: str | Path | None = None,
         dry_run: bool = True,
         make_reports: bool = True,
+        visual_mode: str | None = None,
+        narrate: bool = True,
     ) -> PipelineResult:
         result = PipelineResult(project=project)
 
@@ -290,10 +320,24 @@ class Pipeline:
             result.errors.append(f"creative: {exc}")
             return result
 
-        # 5-6. images and video
+        # 5. narration first: it re-times the shots, so it must run before the
+        #    visuals are cut to those timings.
+        voice_path = None
+        if narrate:
+            try:
+                track = self.narrate(result.storyboard)
+                result.voice = track
+                voice_path = track.path
+            except Exception as exc:
+                result.errors.append(f"voice: {exc}")
+
+        # 6-7. visuals and video
         try:
-            self.generate_images(result.storyboard)
-            result.render = self.render_video(result.storyboard, bgm=bgm)
+            result.visuals = self.generate_visuals(result.storyboard, visual_mode)
+            result.render = self.render_video(
+                result.storyboard, bgm=bgm, voice=voice_path,
+                visual_summary=result.visuals.summary(),
+            )
         except Exception as exc:
             result.errors.append(f"render: {exc}")
 

@@ -2,7 +2,15 @@
 {% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / {{ project.name }}</div>{% endblock %}
 {% block heading %}{{ project.name }}{% endblock %}
 {% block subheading %}{{ project.description or '説明なし' }}{% endblock %}
-{% block actions %}<a class="btn ghost" href="/projects/{{ project.id }}/report">実績レポート</a>{% endblock %}
+{% block actions %}
+<a class="btn ghost" href="/projects/{{ project.id }}/report">実績レポート</a>
+{% if user and user.can_write %}
+<form method="post" action="/projects/{{ project.id }}/metrics" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="btn ghost">実績を収集</button>
+</form>
+{% endif %}
+{% endblock %}
 
 {% block content %}
 <div class="grid g4">
@@ -12,6 +20,48 @@
   <div class="card"><div class="stat-label">動画</div><div class="stat">{{ renders | length }}</div></div>
   <div class="card"><div class="stat-label">PDCA</div><div class="stat">{{ project.pdca_cycles | length }}</div></div>
 </div>
+
+{% if job_id %}<div class="note">処理を開始しました。<a href="/jobs">実行履歴</a>で進行状況を確認できます。</div>{% endif %}
+
+{% if user and user.can_write %}
+<h2>実行</h2>
+<div class="grid g2">
+  <form class="act" method="post" action="/projects/{{ project.id }}/research">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="f" style="flex:1;min-width:150px">
+      <label for="rk">競合調査するキーワード</label>
+      <input id="rk" name="keyword" required placeholder="副業 始め方">
+    </div>
+    <div class="f"><label for="rp">対象</label>
+      <select id="rp" name="platform">
+        {% for p in platforms %}<option value="{{ p }}"{{ ' selected' if p == 'youtube' }}>{{ p }}</option>{% endfor %}
+      </select></div>
+    <div class="f"><label for="rl">件数</label>
+      <input id="rl" name="limit" type="number" value="50" min="10" max="200" style="width:72px"></div>
+    <button class="btn">調査を開始</button>
+  </form>
+
+  <form class="act" method="post" action="/projects/{{ project.id }}/script">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="f" style="flex:1;min-width:150px">
+      <label for="sk">台本のテーマ</label>
+      <input id="sk" name="keyword" required placeholder="副業の始め方">
+    </div>
+    <div class="f"><label for="sp">投稿先</label>
+      <select id="sp" name="platform">
+        {% for p in platforms %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select></div>
+    <div class="f"><label for="sd">尺（秒）</label>
+      <input id="sd" name="duration" type="number" value="30" min="5" max="180" style="width:72px"></div>
+    <div class="f"><label for="sr">参照する調査</label>
+      <select id="sr" name="run_id">
+        <option value="">なし</option>
+        {% for row in runs %}<option value="{{ row.run.id }}">#{{ row.run.id }} {{ row.run.keyword }}</option>{% endfor %}
+      </select></div>
+    <button class="btn">台本を作成</button>
+  </form>
+</div>
+{% endif %}
 
 <h2>調査</h2>
 {% if project.research_runs %}

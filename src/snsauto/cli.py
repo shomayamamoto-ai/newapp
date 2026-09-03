@@ -11,7 +11,9 @@ from rich.table import Table
 
 from .config import get_settings
 from .db import init_db, session_scope
-from .models import PdcaCycle, Platform, Project, ResearchRun, Script
+from .models import (
+    Experiment, PdcaCycle, Platform, Project, ResearchRun, Script, User,
+)
 from .pipeline import Pipeline
 from .platforms import capability_matrix
 from .platforms.tiktok import TikTokAdapter
@@ -25,6 +27,10 @@ metrics_app = typer.Typer(help="Collect and inspect performance.", no_args_is_he
 pdca_app = typer.Typer(help="Plan-Do-Check-Act cycles.", no_args_is_help=True)
 report_app = typer.Typer(help="HTML / PDF reports.", no_args_is_help=True)
 template_app = typer.Typer(help="HTML/CSS report templates.", no_args_is_help=True)
+footage_app = typer.Typer(help="Real / stock footage library.", no_args_is_help=True)
+worker_app = typer.Typer(help="Scheduled publishing and metrics collection.", no_args_is_help=True)
+ab_app = typer.Typer(help="A/B experiments.", no_args_is_help=True)
+user_app = typer.Typer(help="Web UI accounts.", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(research_app, name="research")
@@ -33,6 +39,10 @@ app.add_typer(metrics_app, name="metrics")
 app.add_typer(pdca_app, name="pdca")
 app.add_typer(report_app, name="report")
 app.add_typer(template_app, name="template")
+app.add_typer(footage_app, name="footage")
+app.add_typer(worker_app, name="worker")
+app.add_typer(ab_app, name="ab")
+app.add_typer(user_app, name="user")
 
 console = Console()
 
@@ -267,8 +277,12 @@ def create_video(
     bgm: Path = typer.Option(None, "--bgm"),
     style: str = typer.Option(None, "--style", help="Visual style hint"),
     ken_burns: bool = typer.Option(True, "--ken-burns/--static"),
+    visual_mode: str = typer.Option(
+        None, "--visual", help="still | animate | footage | auto"
+    ),
+    narrate: bool = typer.Option(False, "--narrate", help="Synthesise narration"),
 ):
-    """Storyboard, generate images, and render the video (ワンタッチ編集)."""
+    """Storyboard, source visuals, and render the video (ワンタッチ編集)."""
     init_db()
     get_settings().ensure_workspace()
     with session_scope() as session:
@@ -278,8 +292,28 @@ def create_video(
         pipeline = Pipeline(session)
         board = pipeline.draw_storyboard(script, style_hint=style)
         console.print(f"Storyboard {board.id}: {len(board.shots)} shots")
-        pipeline.generate_images(board)
-        render = pipeline.render_video(board, bgm=bgm, ken_burns=ken_burns)
+
+        voice_path = None
+        if narrate:
+            track = pipeline.narrate(board)
+            voice_path = track.path
+            console.print(
+                f"Narration: {'synthesised' if track.synthesized else 'estimated timings only'}"
+                f" ({track.total_duration:.1f}s)"
+            )
+
+        visuals = pipeline.generate_visuals(board, visual_mode)
+        console.print(f"Visuals: {visuals.counts}")
+        for degraded in visuals.degraded:
+            console.print(
+                f"  [yellow]shot {degraded.shot_index}[/yellow] fell back to "
+                f"{degraded.mode.value}: {degraded.note}"
+            )
+
+        render = pipeline.render_video(
+            board, bgm=bgm, voice=voice_path, ken_burns=ken_burns,
+            visual_summary=visuals.summary(),
+        )
         console.print(
             f"[green]Rendered[/green] {render.path} "
             f"({render.duration_sec:.1f}s, {render.width}x{render.height}, "
@@ -415,3 +449,208 @@ def template_eject(name: str):
 
 if __name__ == "__main__":
     app()
+
+
+# ---------------- footage ----------------
+
+@footage_app.command("index")
+def footage_index(
+    directory: Path = typer.Argument(None, help="Defaults to SNSAUTO_FOOTAGE_DIR"),
+):
+    """Index a folder of clips so shots can be matched to real footage."""
+    init_db()
+    from .creative.footage import FootageLibrary
+
+    with session_scope() as session:
+        assets = FootageLibrary(session).index(directory)
+        console.print(f"[green]Indexed[/green] {len(assets)} clips")
+        table = Table(header_style="bold")
+        table.add_column("file"); table.add_column("dur", justify="right")
+        table.add_column("size"); table.add_column("keywords")
+        for asset in assets[:25]:
+            table.add_row(
+                Path(asset.path).name, f"{asset.duration_sec:.1f}s",
+                f"{asset.width}x{asset.height}", ", ".join(asset.keywords[:6]),
+            )
+        console.print(table)
+
+
+@footage_app.command("list")
+def footage_list():
+    """Show the indexed footage library."""
+    init_db()
+    from .models import ClipAsset
+
+    with session_scope() as session:
+        table = Table(header_style="bold")
+        table.add_column("id", justify="right"); table.add_column("file")
+        table.add_column("dur", justify="right"); table.add_column("vertical")
+        table.add_column("keywords")
+        for asset in session.query(ClipAsset).order_by(ClipAsset.id):
+            table.add_row(
+                str(asset.id), Path(asset.path).name, f"{asset.duration_sec:.1f}s",
+                "yes" if asset.is_vertical else "no", ", ".join(asset.keywords[:6]),
+            )
+        console.print(table)
+
+
+# ---------------- worker ----------------
+
+@worker_app.command("run")
+def worker_run(
+    interval: float = typer.Option(None, "--interval", help="Seconds between ticks"),
+    once: bool = typer.Option(False, "--once", help="Run a single tick and exit"),
+):
+    """Publish scheduled posts and collect metrics on a loop."""
+    init_db()
+    import logging
+
+    from .db import get_engine
+    from .scheduling.worker import Worker
+    from sqlalchemy.orm import Session as SASession
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    settings = get_settings()
+    engine = get_engine()
+    worker = Worker(lambda: SASession(engine, expire_on_commit=False), settings)
+
+    if once:
+        console.print_json(json.dumps(worker.tick(), default=str))
+        return
+    console.print(f"[green]worker[/green] {worker.identity} started")
+    worker.run(interval)
+
+
+@worker_app.command("jobs")
+def worker_jobs(limit: int = typer.Option(5, "--limit")):
+    """Run queued web jobs (useful when the UI runs behind a process manager)."""
+    init_db()
+    from .db import get_engine
+    from .scheduling.jobs import JobRunner
+    from sqlalchemy.orm import Session as SASession
+
+    engine = get_engine()
+    runner = JobRunner(lambda: SASession(engine, expire_on_commit=False), get_settings())
+    console.print_json(json.dumps(runner.run_queued(limit), default=str))
+
+
+# ---------------- A/B ----------------
+
+@ab_app.command("create")
+def ab_create(
+    project: str,
+    script_id: int,
+    dimension: str = typer.Option("hook", "--dimension", "-d"),
+    arms: int = typer.Option(2, "--arms", "-n"),
+    name: str = typer.Option(None, "--name"),
+):
+    """Create an A/B experiment from a base script."""
+    init_db()
+    from .experiments import DIMENSIONS, ExperimentService
+    from .llm import build_client
+
+    if dimension not in DIMENSIONS:
+        raise typer.BadParameter(f"choose from {sorted(DIMENSIONS)}")
+
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        base = session.get(Script, script_id)
+        if base is None:
+            raise typer.BadParameter(f"no script with id {script_id}")
+        experiment = ExperimentService(session, build_client()).create(
+            proj, name or f"{base.title} A/B", base, dimension, arms
+        )
+        console.print(f"[green]Experiment {experiment.id}[/green]: {experiment.name}")
+        table = Table(header_style="bold")
+        table.add_column("arm"); table.add_column("script", justify="right")
+        table.add_column("treatment")
+        for variant in experiment.variants:
+            detail = ", ".join(
+                f"{k}={v}" for k, v in variant.treatment.items()
+                if k not in ("dimension", "control")
+            )
+            table.add_row(variant.label, str(variant.script_id), detail or "control")
+        console.print(table)
+
+
+@ab_app.command("attach")
+def ab_attach(experiment_id: int, label: str, publication_ids: list[int]):
+    """Attach publications to one arm."""
+    init_db()
+    from .experiments import ExperimentService
+
+    with session_scope() as session:
+        experiment = session.get(Experiment, experiment_id)
+        if experiment is None:
+            raise typer.BadParameter(f"no experiment with id {experiment_id}")
+        variant = next(
+            (v for v in experiment.variants if v.label.upper() == label.upper()), None
+        )
+        if variant is None:
+            raise typer.BadParameter(f"no arm {label!r}")
+        ExperimentService(session).attach(variant, list(publication_ids))
+        console.print(f"arm {variant.label}: {len(variant.publication_ids)} publications")
+
+
+@ab_app.command("review")
+def ab_review(experiment_id: int):
+    """Measure the arms and declare a winner - or say why there isn't one."""
+    init_db()
+    from .experiments import ExperimentService
+
+    with session_scope() as session:
+        experiment = session.get(Experiment, experiment_id)
+        if experiment is None:
+            raise typer.BadParameter(f"no experiment with id {experiment_id}")
+        service = ExperimentService(session)
+        service.evaluate(experiment)
+        conclusion = experiment.conclusion or {}
+        colour = "green" if conclusion.get("verdict") == "winner" else "yellow"
+        console.print(f"[{colour}]{conclusion.get('verdict')}[/{colour}] {conclusion.get('reason')}")
+        console.print(service.learnings(experiment))
+
+
+# ---------------- users ----------------
+
+@user_app.command("create")
+def user_create(
+    email: str,
+    password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+    name: str = typer.Option(None, "--name"),
+    role: str = typer.Option("editor", "--role", help="admin | editor | viewer"),
+):
+    """Create a web UI account."""
+    init_db()
+    from .web.auth import AuthError, create_user
+
+    with session_scope() as session:
+        try:
+            user = create_user(session, email, password, name, role)
+        except AuthError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        console.print(f"[green]Created[/green] {user.email} ({user.role})")
+
+
+@user_app.command("list")
+def user_list():
+    """List web UI accounts."""
+    init_db()
+    with session_scope() as session:
+        table = Table(header_style="bold")
+        table.add_column("id", justify="right"); table.add_column("email")
+        table.add_column("role"); table.add_column("active"); table.add_column("last login")
+        for user in session.query(User).order_by(User.id):
+            table.add_row(
+                str(user.id), user.email, user.role,
+                "yes" if user.is_active else "no",
+                user.last_login_at.strftime("%Y-%m-%d %H:%M") if user.last_login_at else "-",
+            )
+        console.print(table)
+
+
+@user_app.command("secret")
+def user_secret():
+    """Generate a signing key for SNSAUTO_SECRET_KEY."""
+    import secrets
+
+    console.print(secrets.token_urlsafe(48))

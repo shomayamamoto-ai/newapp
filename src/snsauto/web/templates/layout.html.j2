@@ -110,6 +110,21 @@ video{width:100%;border-radius:var(--r);background:#000;display:block}
 .beat .t{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);padding-top:2px}
 .beat .telop{font-weight:650}
 .beat .narr{color:var(--ink-2);font-size:12px;margin-top:2px}
+form.act{display:flex;gap:7px;align-items:flex-end;flex-wrap:wrap;
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+form.act .f{display:flex;flex-direction:column;gap:3px}
+form.act label{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:700}
+input,select{padding:6px 9px;border:1px solid var(--line);border-radius:6px;
+  background:var(--panel-2);color:var(--ink);font-size:12.5px;font-family:var(--font)}
+input:focus,select:focus,button:focus-visible,a:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--brand)}
+.chk{flex-direction:row!important;align-items:center;gap:5px}
+.chk label{text-transform:none;letter-spacing:0;font-size:12px;color:var(--ink-2);font-weight:400}
+.danger{border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+.danger .btn{background:var(--bad)}
+.whoami{margin-top:auto;padding-top:14px;border-top:1px solid var(--line);font-size:11px;color:var(--ink-3)}
+nav.side{display:flex;flex-direction:column}
 </style>
 </head>
 <body>
@@ -118,6 +133,7 @@ video{width:100%;border-radius:var(--r);background:#000;display:block}
     <div class="brand"><span class="dot"></span>snsauto</div>
     <p class="brand-sub">SNS運用自動化</p>
     <a href="/" class="{{ 'active' if nav == 'dashboard' }}">ダッシュボード</a>
+    <a href="/jobs" class="{{ 'active' if nav == 'jobs' }}">実行履歴</a>
     <a href="/capabilities" class="{{ 'active' if nav == 'capabilities' }}">接続状況</a>
     <div class="navsec">プロジェクト</div>
     {% for p in all_projects %}
@@ -125,6 +141,16 @@ video{width:100%;border-radius:var(--r);background:#000;display:block}
     {% else %}
       <p class="sub" style="padding:0 10px">まだありません</p>
     {% endfor %}
+    {% if auth_enabled and user %}
+    <div class="whoami">
+      <div>{{ user.name or user.email }}</div>
+      <div style="margin-bottom:6px">権限: {{ user.role }}</div>
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn ghost" style="width:100%;font-size:11px;padding:5px">ログアウト</button>
+      </form>
+    </div>
+    {% endif %}
   </nav>
   <main>
     <header class="head">
