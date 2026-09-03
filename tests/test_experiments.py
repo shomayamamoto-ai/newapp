@@ -32,12 +32,12 @@ class TestVerdicts:
         """A 37% lead means nothing when the arms themselves vary that much."""
         result = compare_variants({"A": arm(5, 0.040, 0.03), "B": arm(5, 0.055, 0.03)})
         assert result["verdict"] == "inconclusive"
-        assert "spread" in result["reason"]
+        assert "ばらつき" in result["reason"]
 
     def test_thin_samples_refuse_to_conclude(self):
         result = compare_variants({"A": arm(1, 0.02), "B": arm(1, 0.30)})
         assert result["verdict"] == "inconclusive"
-        assert "fewer than" in result["reason"]
+        assert "本未満" in result["reason"]
 
     def test_one_measured_arm_is_not_a_comparison(self):
         result = compare_variants({"A": arm(5, 0.05), "B": {"sample": 0}})

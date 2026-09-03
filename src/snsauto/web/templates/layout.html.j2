@@ -64,6 +64,14 @@ h3{font-size:12px;margin:16px 0 7px;color:var(--ink-2);text-transform:uppercase;
   /* Narrow screens: let the table scroll inside itself instead of widening the page. */
   main table{display:block;overflow-x:auto;white-space:nowrap}
   .g4,.g3{grid-template-columns:repeat(2,1fr)}main{padding:18px}}
+@media(max-width:700px){
+  /* Two forms side by side cannot shrink past their fields' min-width, so
+     they push the page wider instead of wrapping. Stack them instead. */
+  .g2{grid-template-columns:1fr}
+  form.act .f{min-width:0!important;width:100%}
+  form.act{flex-direction:column;align-items:stretch}
+  form.act .btn{width:100%}}
+@media(max-width:560px){.g4,.g3{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px}
 .card.link:hover{border-color:var(--brand)}
 .stat-label{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:700}

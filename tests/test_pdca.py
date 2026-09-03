@@ -79,4 +79,5 @@ class TestCycleLifecycle:
         service = PdcaService(session)
         cycle = service.plan(project, "t", "h", TARGET, [])
         service.run_check_act(cycle)
-        assert any("more posts" in a["action"] for a in cycle.next_actions)
+        assert any("あと" in a["action"] and "本投稿" in a["action"]
+                   for a in cycle.next_actions)

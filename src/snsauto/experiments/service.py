@@ -74,7 +74,7 @@ def compare_variants(results: dict[str, dict], metric: str = "engagement_rate") 
     if len(measured) < 2:
         return {
             "verdict": "inconclusive",
-            "reason": f"{len(measured)} arm(s) have data; a comparison needs at least 2",
+            "reason": f"実績のある案が{len(measured)}件です。比較には2件以上必要です。",
         }
 
     thin = [k for k, v in measured.items() if v["sample"] < MIN_SAMPLE]
@@ -82,8 +82,8 @@ def compare_variants(results: dict[str, dict], metric: str = "engagement_rate") 
         return {
             "verdict": "inconclusive",
             "reason": (
-                f"arms {sorted(thin)} have fewer than {MIN_SAMPLE} posts; "
-                "social variance at that sample size swamps any real difference"
+                f"案 {'・'.join(sorted(thin))} の投稿数が{MIN_SAMPLE}本未満です。"
+                "この本数では、実際の差なのか単なるばらつきなのか区別できません。"
             ),
             "samples": {k: v["sample"] for k, v in measured.items()},
         }
@@ -107,8 +107,8 @@ def compare_variants(results: dict[str, dict], metric: str = "engagement_rate") 
         return {
             "verdict": "inconclusive",
             "reason": (
-                f"{best_label} leads {second_label} by {lift:.0%} "
-                f"({gap:.4f}), within the {noise:.4f} spread inside the arms"
+                f"案{best_label}が案{second_label}を{lift:.0%}（{gap:.4f}）上回っていますが、"
+                f"案の内部のばらつき {noise:.4f} の範囲内です。差とは言えません。"
             ),
             "ranking": [(k, v.get(metric, 0)) for k, v in ranked],
             "samples": {k: v["sample"] for k, v in measured.items()},
@@ -118,7 +118,7 @@ def compare_variants(results: dict[str, dict], metric: str = "engagement_rate") 
         "verdict": "winner",
         "winner": best_label,
         "metric": metric,
-        "reason": f"{best_label} beat {second_label} by {lift:.0%} on {metric}",
+        "reason": f"案{best_label}が案{second_label}を {metric} で {lift:.0%} 上回りました。",
         "lift": round(lift, 4),
         "ranking": [(k, v.get(metric, 0)) for k, v in ranked],
         "samples": {k: v["sample"] for k, v in measured.items()},
@@ -319,7 +319,7 @@ class ExperimentService:
             f"{k}={v}" for k, v in treatment.items() if k not in ("dimension", "control")
         )
         return (
-            f"{experiment.dimension} matters here: arm {conclusion['winner']} "
-            f"({detail or 'control'}) beat the runner-up by "
-            f"{conclusion['lift']:.0%} on {experiment.metric}."
+            f"この題材では {experiment.dimension} が効きます。案{conclusion['winner']}"
+            f"（{detail or '対照'}）が2位を {experiment.metric} で "
+            f"{conclusion['lift']:.0%} 上回りました。"
         )

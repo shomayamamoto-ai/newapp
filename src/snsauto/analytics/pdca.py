@@ -75,11 +75,11 @@ def evaluate_target(target: dict, result: dict, baseline: dict) -> dict:
     sample = result.get("sample", 0)
 
     if sample == 0:
-        return {"verdict": "inconclusive", "reason": "no measured publications yet"}
+        return {"verdict": "inconclusive", "reason": "計測済みの投稿がまだありません。"}
 
     actual = result.get(metric)
     if actual is None:
-        return {"verdict": "inconclusive", "reason": f"metric {metric!r} not collected"}
+        return {"verdict": "inconclusive", "reason": f"指標 {metric} が収集されていません。"}
 
     base = target.get("baseline", baseline.get(metric))
     delta_vs_base = (actual - base) if isinstance(base, (int, float)) else None
@@ -88,8 +88,8 @@ def evaluate_target(target: dict, result: dict, baseline: dict) -> dict:
         return {
             "verdict": "inconclusive",
             "reason": (
-                f"{sample} post(s) is below the {MIN_SAMPLE}-post minimum; "
-                "the difference cannot be separated from variance"
+                f"投稿{sample}本は最低{MIN_SAMPLE}本に届きません。"
+                "この本数では差とばらつきを区別できません。"
             ),
             "metric": metric, "actual": actual, "baseline": base,
             "delta_vs_baseline": delta_vs_base,
@@ -100,7 +100,7 @@ def evaluate_target(target: dict, result: dict, baseline: dict) -> dict:
             "success" if delta_vs_base > 0 else "failure"
         )
         return {
-            "verdict": verdict, "reason": "no numeric target set; judged against baseline",
+            "verdict": verdict, "reason": "数値目標が未設定のため、ベースラインとの比較で判定しました。",
             "metric": metric, "actual": actual, "baseline": base,
             "delta_vs_baseline": delta_vs_base,
         }
@@ -109,7 +109,7 @@ def evaluate_target(target: dict, result: dict, baseline: dict) -> dict:
     verdict = "success" if actual >= goal else ("partial" if ratio >= 0.8 else "failure")
     return {
         "verdict": verdict,
-        "reason": f"{metric} {actual} vs target {goal} ({ratio:.0%})",
+        "reason": f"{metric} は {actual}、目標 {goal} に対して {ratio:.0%} です。",
         "metric": metric, "actual": actual, "target": goal, "baseline": base,
         "attainment": round(ratio, 4), "delta_vs_baseline": delta_vs_base,
     }
@@ -198,20 +198,20 @@ def _default_next_actions(evaluation: dict) -> list[dict]:
     metric = evaluation.get("metric", "engagement_rate")
     if verdict == "success":
         return [{
-            "action": f"Re-run the same format on a second keyword and confirm {metric} holds.",
-            "reason": "One winning cycle is a candidate pattern, not yet a repeatable one.",
+            "action": f"同じ型を別のキーワードでもう一度試し、{metric} が再現するか確認する。",
+            "reason": "1回勝っただけでは候補にすぎず、再現性のある型とは言えません。",
             "priority": "high",
         }]
     if verdict == "inconclusive":
         return [{
-            "action": f"Publish {MIN_SAMPLE} more posts under the same hypothesis before judging.",
+            "action": f"同じ仮説であと{MIN_SAMPLE}本投稿してから判定する。",
             "reason": evaluation.get("reason", "sample too small"),
             "priority": "high",
         }]
     return [
-        {"action": "Rewrite the hook only, holding topic and format constant.",
-         "reason": "The hook is the highest-leverage single variable on retention.",
+        {"action": "題材と構成は固定したまま、フックだけを書き直す。",
+         "reason": "維持率に対して、単独で最も効く変数がフックです。",
          "priority": "high"},
-        {"action": "Compare telop density against the top-scoring competitor posts.",
-         "reason": f"{metric} underperformed the target.", "priority": "medium"},
+        {"action": "上位の競合投稿とテロップ量を比較する。",
+         "reason": f"{metric} が目標に届きませんでした。", "priority": "medium"},
     ]
