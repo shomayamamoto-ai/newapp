@@ -80,6 +80,15 @@ class JobRunner:
                 job.error = f"{type(exc).__name__}: {exc}"
                 job.log = (job.log or []) + [traceback.format_exc()[-2000:]]
                 log.exception("job %s (%s) failed", job_id, job.kind)
+                from ..notify import AlertService
+
+                AlertService(session, self.settings).raise_alert(
+                    source=f"job.{job.kind}",
+                    title=f"{job.kind} ジョブが失敗しました",
+                    detail=job.error,
+                    project_id=job.project_id,
+                    context={"job_id": job.id, "params": job.params},
+                )
             finally:
                 job.finished_at = utcnow()
                 job.claimed_by = None

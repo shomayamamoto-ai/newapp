@@ -387,3 +387,131 @@ def test_localhost_mode_needs_no_login(app_env):
     """With auth off the UI is open, which is only safe on localhost."""
     client, _ = app_env
     assert client.get("/").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Alerts, brand profile and public asset serving
+# ---------------------------------------------------------------------------
+
+
+class TestAlertsInUi:
+    def test_open_alerts_appear_on_the_dashboard(self, secure_env):
+        import snsauto.db as dbmod
+        from snsauto.notify import AlertService
+
+        with dbmod.session_scope() as session:
+            AlertService(session, sender=None).raise_alert(
+                "worker.publish", "トークンが失効しました", "expired"
+            )
+
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        body = client.get("/").text
+        assert "要対応" in body and "トークンが失効しました" in body
+
+    def test_acknowledging_clears_it(self, secure_env):
+        import snsauto.db as dbmod
+        from snsauto.notify import AlertService
+
+        with dbmod.session_scope() as session:
+            alert = AlertService(session, sender=None).raise_alert("x", "消えるはず")
+            alert_id = alert.id
+
+        client_for, _ = secure_env
+        client, token = client_for("admin@x.com")
+        assert client.post(f"/alerts/{alert_id}/ack", data={"csrf_token": token},
+                           follow_redirects=False).status_code == 303
+        assert "消えるはず" not in client.get("/").text
+
+    def test_viewers_cannot_acknowledge(self, secure_env):
+        import snsauto.db as dbmod
+        from snsauto.notify import AlertService
+
+        with dbmod.session_scope() as session:
+            alert_id = AlertService(session, sender=None).raise_alert("x", "t").id
+
+        client_for, _ = secure_env
+        client, token = client_for("viewer@x.com")
+        assert client.post(f"/alerts/{alert_id}/ack",
+                           data={"csrf_token": token}).status_code == 403
+
+
+class TestBrandProfile:
+    def test_page_renders(self, secure_env):
+        client_for, ids = secure_env
+        client, _ = client_for("admin@x.com")
+        assert client.get(f"/projects/{ids['project']}/brand").status_code == 200
+
+    def test_saving_stores_the_profile(self, secure_env):
+        import snsauto.db as dbmod
+        from snsauto.models import Project as ProjectModel
+
+        client_for, ids = secure_env
+        client, token = client_for("admin@x.com")
+        response = client.post(
+            f"/projects/{ids['project']}/brand",
+            data={"persona": "副業3年目の会社員", "tone": "落ち着いた",
+                  "banned_words": "絶対、必ず儲かる\nラクして",
+                  "csrf_token": token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        with dbmod.session_scope() as session:
+            profile = session.get(ProjectModel, ids["project"]).brand_profile
+        assert profile["persona"] == "副業3年目の会社員"
+        assert profile["banned_words"] == ["絶対", "必ず儲かる", "ラクして"]
+        # Blank fields must not become empty instructions.
+        assert "audience" not in profile
+
+    def test_viewers_cannot_save(self, secure_env):
+        client_for, ids = secure_env
+        client, token = client_for("viewer@x.com")
+        assert client.post(f"/projects/{ids['project']}/brand",
+                           data={"persona": "x", "csrf_token": token}).status_code == 403
+
+
+class TestPublicAssets:
+    def test_disabled_by_default(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        assert client.get("/public/renders/anything.mp4").status_code == 404
+
+    def test_served_without_a_session_when_enabled(self, tmp_path, monkeypatch):
+        """Instagram's servers fetch this URL and carry no login."""
+        from snsauto.storage import LocalStorage
+        from snsauto.web import create_app
+
+        db = tmp_path / "pub.db"
+        monkeypatch.setenv("SNSAUTO_DB_URL", f"sqlite:///{db}")
+        monkeypatch.setenv("SNSAUTO_WORKSPACE", str(tmp_path / "ws"))
+        import snsauto.db as dbmod
+        from snsauto.config import get_settings
+
+        dbmod._engine = None
+        dbmod._Session = None
+        get_settings.cache_clear()
+
+        settings = Settings(
+            _env_file=None, SNSAUTO_DB_URL=f"sqlite:///{db}",
+            SNSAUTO_WORKSPACE=str(tmp_path / "ws"), STORAGE_BACKEND="local",
+            SNSAUTO_PUBLIC_BASE_URL="https://x.example.com",
+            SNSAUTO_AUTH_ENABLED=True, SNSAUTO_SECRET_KEY="s" * 40,
+        )
+        settings.ensure_workspace()
+        dbmod.init_db()
+
+        video = tmp_path / "v.mp4"
+        video.write_bytes(b"\x00" * 64)
+        asset = LocalStorage(settings.workspace / "public",
+                             "https://x.example.com").upload(video)
+
+        with TestClient(create_app(settings)) as client:
+            response = client.get(f"/public/{asset.key}")
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "video/mp4"
+            assert client.get("/public/../snsauto.db").status_code in (400, 404)
+
+        get_settings.cache_clear()
+        dbmod._engine = None
+        dbmod._Session = None

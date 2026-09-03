@@ -654,3 +654,40 @@ def user_secret():
     import secrets
 
     console.print(secrets.token_urlsafe(48))
+
+
+# ---------------- database ----------------
+
+db_app = typer.Typer(help="Schema migrations.", no_args_is_help=True)
+app.add_typer(db_app, name="db")
+
+
+@db_app.command("upgrade")
+def db_upgrade(revision: str = typer.Argument("head")):
+    """Apply migrations."""
+    from alembic import command
+
+    from .db import _alembic_config
+
+    command.upgrade(_alembic_config(), revision)
+    console.print(f"[green]Upgraded[/green] to {revision}")
+
+
+@db_app.command("current")
+def db_current():
+    """Show the applied revision."""
+    from alembic import command
+
+    from .db import _alembic_config
+
+    command.current(_alembic_config(), verbose=True)
+
+
+@db_app.command("revision")
+def db_revision(message: str = typer.Option(..., "--message", "-m")):
+    """Autogenerate a migration from model changes."""
+    from alembic import command
+
+    from .db import _alembic_config
+
+    command.revision(_alembic_config(), message=message, autogenerate=True)

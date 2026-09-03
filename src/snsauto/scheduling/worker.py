@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 
 from ..analytics.collect import MetricsCollector
+from ..notify import AlertService
 from ..config import get_settings
 from ..models import (
     MetricSnapshot,
@@ -164,6 +165,13 @@ class Worker:
         publication.claimed_by = None
         session.flush()
         log.error("publish failed for %s: %s", publication.id, message)
+        AlertService(session, self.settings).raise_alert(
+            source="worker.publish",
+            title=f"{publication.platform.value} への投稿に失敗しました",
+            detail=message,
+            project_id=publication.project_id,
+            context={"publication_id": publication.id},
+        )
         return {
             "publication_id": publication.id, "platform": publication.platform.value,
             "status": "failed", "error": message,

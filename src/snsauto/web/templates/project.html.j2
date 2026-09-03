@@ -3,6 +3,7 @@
 {% block heading %}{{ project.name }}{% endblock %}
 {% block subheading %}{{ project.description or '説明なし' }}{% endblock %}
 {% block actions %}
+<a class="btn ghost" href="/projects/{{ project.id }}/brand">ブランド設定</a>
 <a class="btn ghost" href="/projects/{{ project.id }}/report">実績レポート</a>
 {% if user and user.can_write %}
 <form method="post" action="/projects/{{ project.id }}/metrics" style="display:inline">

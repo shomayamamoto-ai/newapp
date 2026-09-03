@@ -1,0 +1,26 @@
+[Unit]
+Description=snsauto worker (scheduled publishing and metrics)
+After=network-online.target snsauto-web.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=snsauto
+Group=snsauto
+WorkingDirectory=/opt/snsauto
+EnvironmentFile=/opt/snsauto/.env
+ExecStart=/opt/snsauto/.venv/bin/snsauto worker run
+Restart=always
+RestartSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/snsauto/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

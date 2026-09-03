@@ -1,0 +1,76 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / <a href="/projects/{{ project.id }}">{{ project.name }}</a> / ブランド設定</div>{% endblock %}
+{% block heading %}ブランド設定{% endblock %}
+{% block subheading %}ここに書いた内容は、台本・絵コンテ・改善提案のすべての生成に反映されます{% endblock %}
+
+{% block content %}
+{% if saved %}<div class="note">保存しました。次に生成する台本から反映されます。</div>{% endif %}
+
+<form method="post" action="/projects/{{ project.id }}/brand"
+      style="display:grid;gap:14px;max-width:700px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="card" style="display:grid;gap:12px">
+    <div class="f" style="display:grid;gap:4px">
+      <label for="persona">語り手（誰として話すか）</label>
+      <input id="persona" name="persona" value="{{ profile.persona or '' }}"
+             placeholder="副業3年目の会社員">
+    </div>
+    <div class="f" style="display:grid;gap:4px">
+      <label for="audience">想定視聴者</label>
+      <input id="audience" name="audience" value="{{ profile.audience or '' }}"
+             placeholder="20〜30代の会社員、まだ副業をしていない人">
+    </div>
+    <div class="f" style="display:grid;gap:4px">
+      <label for="tone">トーン</label>
+      <input id="tone" name="tone" value="{{ profile.tone or '' }}"
+             placeholder="落ち着いた、断定しすぎない、煽らない">
+    </div>
+    <div class="f" style="display:grid;gap:4px">
+      <label for="first_person">一人称</label>
+      <input id="first_person" name="first_person" value="{{ profile.first_person or '' }}"
+             placeholder="僕 / 私 / うち">
+    </div>
+  </div>
+
+  <div class="card" style="display:grid;gap:12px">
+    <div class="f" style="display:grid;gap:4px">
+      <label for="banned_words">使わない言葉（カンマまたは改行区切り）</label>
+      <textarea id="banned_words" name="banned_words" rows="3"
+        style="padding:8px 10px;border:1px solid var(--line);border-radius:6px;
+               background:var(--panel-2);color:var(--ink);font-family:var(--font);font-size:12.5px"
+        placeholder="絶対、必ず儲かる、誰でも簡単に">{{ (profile.banned_words or []) | join('、') }}</textarea>
+      <span class="sub">薬機法・景表法に触れる表現や、ブランドとして避けたい煽り文句を入れてください。</span>
+    </div>
+    <div class="f" style="display:grid;gap:4px">
+      <label for="required_disclaimer">毎回入れる注記</label>
+      <input id="required_disclaimer" name="required_disclaimer"
+             value="{{ profile.required_disclaimer or '' }}"
+             placeholder="投資判断はご自身の責任で">
+    </div>
+    <div class="f" style="display:grid;gap:4px">
+      <label for="cta_style">CTAの方針</label>
+      <input id="cta_style" name="cta_style" value="{{ profile.cta_style or '' }}"
+             placeholder="保存を促す（フォロー訴求はしない）">
+    </div>
+    <div class="f" style="display:grid;gap:4px">
+      <label for="notes">その他の指示</label>
+      <textarea id="notes" name="notes" rows="3"
+        style="padding:8px 10px;border:1px solid var(--line);border-radius:6px;
+               background:var(--panel-2);color:var(--ink);font-family:var(--font);font-size:12.5px"
+        placeholder="具体的な金額は出さない。体験談ベースで話す。">{{ profile.notes or '' }}</textarea>
+    </div>
+  </div>
+
+  {% if user and user.can_write %}
+  <div><button class="btn">保存する</button></div>
+  {% else %}
+  <p class="sub">編集には編集権限が必要です。</p>
+  {% endif %}
+</form>
+
+<div class="note" style="max-width:700px">
+  <strong>生成に渡される形:</strong> ここの内容はJSONではなく指示文に変換されて渡されます。
+  「banned_words というキー」より「この言葉は使うな」の方が確実に守られるためです。
+</div>
+{% endblock %}

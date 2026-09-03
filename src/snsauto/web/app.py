@@ -24,6 +24,7 @@ from ..analytics.collect import summarize_publication
 from ..config import Settings, get_settings
 from ..db import get_engine, init_db
 from ..models import (
+    Alert,
     Experiment,
     Job,
     JobStatus,
@@ -41,7 +42,9 @@ from ..models import (
     VisualMode,
 )
 from . import auth as authlib
+from ..notify import AlertService
 from ..platforms import PostRecord, capability_matrix
+from ..storage import build_storage, storage_status
 from ..reporting.templates import _fmt_dt, _fmt_dur, _fmt_int, _fmt_pct
 from ..research.keyword import W_ENGAGEMENT, W_REACH, W_VELOCITY, summarize_corpus
 
@@ -229,9 +232,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         recent = list(
             session.scalars(select(ResearchRun).order_by(ResearchRun.id.desc()).limit(8))
         )
+        alerts = AlertService(session, settings).open_alerts()
         return render(
             "dashboard.html.j2", session, request, user, nav="dashboard", page_title="ダッシュボード",
-            projects=rows, totals=totals, recent_runs=recent,
+            projects=rows, totals=totals, recent_runs=recent, alerts=alerts,
         )
 
     @app.get("/capabilities", response_class=HTMLResponse)
@@ -241,6 +245,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "capabilities.html.j2", session, request, user, nav="capabilities", page_title="接続状況",
             matrix=capability_matrix(settings), requirements=REQUIREMENTS,
             environment=_environment_report(settings),
+            storage=storage_status(settings),
+            mail_configured=bool(settings.smtp_host and settings.alert_email_to),
+            alert_email_to=settings.alert_email_to,
         )
 
     @app.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -656,6 +663,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render("experiment.html.j2", session, request, user, nav="project",
                       project=experiment.project, page_title=experiment.name,
                       experiment=experiment)
+
+    @app.get("/projects/{project_id}/brand", response_class=HTMLResponse)
+    def brand_page(project_id: int, request: Request, saved: bool = False,
+                   session: Session = Depends(get_session), user=Depends(require_login)):
+        project = session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "project not found")
+        return render("brand.html.j2", session, request, user, nav="project",
+                      project=project, page_title=f"{project.name} のブランド設定",
+                      profile=project.brand_profile or {}, saved=saved)
+
+    @app.post("/projects/{project_id}/brand")
+    def brand_save(
+        project_id: int, request: Request,
+        persona: str = Form(""), audience: str = Form(""), tone: str = Form(""),
+        first_person: str = Form(""), banned_words: str = Form(""),
+        required_disclaimer: str = Form(""), cta_style: str = Form(""),
+        notes: str = Form(""), csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_write),
+    ):
+        check_csrf(request, csrf_token)
+        project = session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "project not found")
+
+        banned = [
+            w.strip() for w in banned_words.replace("、", ",").replace("\n", ",").split(",")
+            if w.strip()
+        ]
+        # Only keep what was filled in: empty keys would tell the model to
+        # write "as: " with nothing after it.
+        profile = {
+            key: value for key, value in {
+                "persona": persona.strip(), "audience": audience.strip(),
+                "tone": tone.strip(), "first_person": first_person.strip(),
+                "required_disclaimer": required_disclaimer.strip(),
+                "cta_style": cta_style.strip(), "notes": notes.strip(),
+            }.items() if value
+        }
+        if banned:
+            profile["banned_words"] = banned
+        project.brand_profile = profile
+        session.commit()
+        return RedirectResponse(f"/projects/{project_id}/brand?saved=true", status_code=303)
+
+    @app.post("/alerts/{alert_id}/ack")
+    def ack_alert(
+        alert_id: int, request: Request, csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_write),
+    ):
+        check_csrf(request, csrf_token)
+        alert = session.get(Alert, alert_id)
+        if alert is None:
+            raise HTTPException(404, "alert not found")
+        AlertService(session, settings).acknowledge(alert, getattr(user, "email", None))
+        session.commit()
+        return RedirectResponse("/", status_code=303)
+
+    @app.get("/public/{key:path}")
+    def public_asset(key: str):
+        """Serve files hosted for platforms that fetch by URL.
+
+        Deliberately unauthenticated - Instagram's servers fetch this and carry
+        no session - so it serves only what the local backend put there, and
+        the backend refuses keys that escape its directory.
+        """
+        from ..storage import LocalStorage, StorageError
+
+        storage = build_storage(settings)
+        if not isinstance(storage, LocalStorage):
+            raise HTTPException(404, "local public hosting is not enabled")
+        try:
+            path = storage.path_for(key)
+        except StorageError:
+            raise HTTPException(400, "invalid key") from None
+        if not path.is_file():
+            raise HTTPException(404, "not found")
+        from ..storage.base import content_type_for
+
+        return FileResponse(path, media_type=content_type_for(path))
 
     @app.get("/healthz")
     def healthz():

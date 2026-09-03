@@ -1,0 +1,29 @@
+[Unit]
+Description=snsauto web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=snsauto
+Group=snsauto
+WorkingDirectory=/opt/snsauto
+EnvironmentFile=/opt/snsauto/.env
+# Bind to loopback only; Nginx terminates TLS and proxies to it. Exposing
+# uvicorn directly would serve the UI over plain HTTP.
+ExecStart=/opt/snsauto/.venv/bin/snsauto serve --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+# The app only ever writes to its own data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/snsauto/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

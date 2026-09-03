@@ -40,6 +40,38 @@ Rules you always follow:
 - Every beat must earn the next one. No filler."""
 
 
+def describe_brand(profile: dict | None) -> str:
+    """Render the brand profile as instructions rather than raw JSON.
+
+    A model follows "never say X" far more reliably than it follows a JSON key
+    named banned_words, and the constraints are what the brand actually cares
+    about getting right.
+    """
+    profile = profile or {}
+    if not profile:
+        return "(not specified - use a neutral, friendly tone)"
+
+    lines = []
+    if profile.get("persona"):
+        lines.append(f"You are writing as: {profile['persona']}")
+    if profile.get("audience"):
+        lines.append(f"Audience: {profile['audience']}")
+    if profile.get("tone"):
+        lines.append(f"Tone: {profile['tone']}")
+    if profile.get("first_person"):
+        lines.append(f"Refer to yourself as: {profile['first_person']}")
+    if profile.get("banned_words"):
+        words = "、".join(profile["banned_words"])
+        lines.append(f"Never use these words or phrases: {words}")
+    if profile.get("required_disclaimer"):
+        lines.append(f"Every script must include: {profile['required_disclaimer']}")
+    if profile.get("cta_style"):
+        lines.append(f"Preferred call to action: {profile['cta_style']}")
+    if profile.get("notes"):
+        lines.append(f"Additional direction: {profile['notes']}")
+    return "\n".join(f"- {line}" for line in lines) or "(not specified)"
+
+
 class LLMUnavailable(RuntimeError):
     """No API key configured, or the anthropic SDK is not installed."""
 
@@ -57,12 +89,21 @@ class LLMClient:
         self._anthropic = anthropic
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
+        self.last_usage: dict | None = None
 
     def _json(self, prompt: str, schema: dict, effort: str = "high") -> dict:
+        # The system prompt is byte-identical on every call, so caching it turns
+        # a per-request cost into a once-per-window one. The volatile part (the
+        # brief, the research corpus) goes in the user turn, after the
+        # breakpoint, where it cannot invalidate the cached prefix.
         response = self.client.messages.create(
             model=self.model,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM,
+            system=[{
+                "type": "text",
+                "text": SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
             thinking={"type": "adaptive"},
             output_config={
                 "effort": effort,
@@ -70,6 +111,14 @@ class LLMClient:
             },
             messages=[{"role": "user", "content": prompt}],
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.last_usage = {
+                "input": getattr(usage, "input_tokens", 0),
+                "output": getattr(usage, "output_tokens", 0),
+                "cache_read": getattr(usage, "cache_read_input_tokens", 0),
+                "cache_write": getattr(usage, "cache_creation_input_tokens", 0),
+            }
         if response.stop_reason == "refusal":
             detail = getattr(response, "stop_details", None)
             raise LLMUnavailable(f"request refused: {getattr(detail, 'category', None)}")
@@ -98,7 +147,7 @@ class LLMClient:
 {platform}
 
 # Brand profile
-{json.dumps(brand_profile, ensure_ascii=False, indent=2)}
+{describe_brand(brand_profile)}
 
 # Competitor research (top performers for this keyword)
 {json.dumps(research, ensure_ascii=False, indent=2)[:12000]}

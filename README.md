@@ -153,6 +153,53 @@ snsauto ab review 1
 
 ---
 
+## 公開ストレージ（Instagram投稿に必須）
+
+Instagram は動画のバイト列を受け取らず、**こちらが渡したURLを Meta のサーバーが取りに来ます**。
+つまり公開HTTPS URL が無いと投稿できません。2方式を用意しています。
+
+```ini
+# S3互換（AWS S3 / Cloudflare R2 / MinIO / Wasabi）
+STORAGE_BACKEND=s3
+S3_BUCKET=my-bucket
+S3_ENDPOINT_URL=https://xxx.r2.cloudflarestorage.com   # AWSなら空
+S3_ACCESS_KEY=... 
+S3_SECRET_KEY=...
+S3_PUBLIC_BASE_URL=https://cdn.example.com   # 公開バケット/CDNなら恒久リンク。空なら署名付き期限リンク
+
+# 自前サーバーから配信
+STORAGE_BACKEND=local
+SNSAUTO_PUBLIC_BASE_URL=https://snsauto.example.com
+```
+
+`local` は追加契約が不要な代わりに、**localhost や自己署名証明書では動きません**
+（Meta 側から到達できる必要があるため）。だから `SNSAUTO_PUBLIC_BASE_URL` は推測せず必須にしています。
+
+ファイルは内容のハッシュをキーにするので、同じ動画を再アップロードしても重複しません。
+
+---
+
+## 失敗通知
+
+無人運転は静かに壊れます。トークンが失効したワーカーは毎分リトライを続け、
+その週の投稿が丸ごと無いことに後から気づく、というのが典型です。
+
+```ini
+ALERT_EMAIL_TO=ops@example.com
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
+```
+
+投稿失敗・トークン失効・生成エラーは、**ダッシュボードの「要対応」** と **メール** の両方に出ます。
+
+同じ失敗の繰り返しは1行にまとめ、回数だけ増やします（同じメールが60通来るのは0通と同じです）。
+メールは新規に開いたときだけ送り、「対応済み」にした後で再発したら改めて送ります。
+再発は新しい情報だからです。
+
+---
+
 ## Web UI
 
 ```bash
@@ -172,6 +219,8 @@ snsauto serve                 # http://127.0.0.1:8000
 | PDCA詳細 | 仮説・目標・実測・判定・次アクション |
 | A/Bテスト | 各案の変更内容・実績・勝者判定 |
 | 実行履歴 | Webから実行した処理の進行状況（自動更新） |
+| ブランド設定 | 語り手・トーン・NGワード・必須注記。全生成に反映されます |
+| 要対応（ダッシュボード） | 投稿失敗・トークン失効などの未対応アラート |
 
 ライトとダークの両方に対応します（OSの設定に追従）。
 `/api/projects` `/api/runs/{id}` `/api/capabilities` でJSONも返します（`/api/docs` にOpenAPI）。
@@ -281,10 +330,43 @@ CSS変数（`--brand`, `--ink`, `--font`）とJinjaコンテキスト（`brand_c
 
 ---
 
+## 配備
+
+常時稼働サーバー向けに Docker Compose と systemd の両方を用意しています。
+手順は [`deploy/README.md`](deploy/README.md) にあります。
+
+```bash
+docker compose up -d --build
+docker compose exec web snsauto user create you@example.com --role admin
+```
+
+Web と worker は別プロセスです。**worker を止めると予約投稿と実績収集が止まりますが、
+Web は動き続けるので気づきにくい**点に注意してください。
+
+Nginx 設定（`deploy/nginx.conf`）は TLS 終端、`X-Forwarded-Proto` の受け渡し、
+レンダリング待ちに耐える 600 秒のタイムアウト、大きな動画のための `client_max_body_size 512M`
+を含みます。
+
+### スキーマ移行
+
+起動時に自動でマイグレーションが走ります（Alembic）。
+
+```bash
+snsauto db current      # 適用済みリビジョン
+snsauto db upgrade      # 最新まで適用
+snsauto db revision -m "add column"   # モデル変更から自動生成
+```
+
+`create_all` ではなくマイグレーションにしているのは、**既存テーブルへの列追加ができない**ためです。
+蓄積したデータを持つ常時稼働の環境では、スキーマ変更のたびに壊れます。
+移行前に作られたDB（バージョン印の無いもの）は、テーブルを作り直さず印を打つだけで取り込みます。
+
+---
+
 ## 開発
 
 ```bash
-python -m pytest                    # 253 tests
+python -m pytest                    # 305 tests
 python -m pytest -m "not slow"      # ffmpeg/ブラウザを使わない分だけ
 ```
 

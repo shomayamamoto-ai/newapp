@@ -461,3 +461,36 @@ class User(Base, TimestampMixin):
     @property
     def can_publish(self) -> bool:
         return self.role == "admin"
+
+
+class AlertLevel(str, enum.Enum):
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class Alert(Base, TimestampMixin):
+    """Something that needs a human, raised by unattended work.
+
+    Deduplicated on ``fingerprint``: a worker retrying a broken token every
+    minute must not send sixty emails or bury the dashboard.
+    """
+
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    level: Mapped[AlertLevel] = mapped_column(Enum(AlertLevel), default=AlertLevel.ERROR)
+    source: Mapped[str] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(String(300))
+    detail: Mapped[str | None] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(200))
+    context: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    @property
+    def is_open(self) -> bool:
+        return self.acknowledged_at is None

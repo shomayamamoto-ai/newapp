@@ -1,0 +1,39 @@
+# Web and worker share one image, one database and one workspace volume.
+# They are separate services because a long render must not block the UI, and
+# because the worker has to keep running when nobody is signed in.
+
+x-common: &common
+  build: .
+  image: snsauto:latest
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    SNSAUTO_DB_URL: sqlite:////data/snsauto.db
+    SNSAUTO_WORKSPACE: /data/workspace
+    SNSAUTO_AUTH_ENABLED: "true"
+  volumes:
+    - snsauto-data:/data
+    # Read-only: the app indexes this footage but must never modify it.
+    - ./clips:/clips:ro
+
+services:
+  web:
+    <<: *common
+    command: ["snsauto", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    <<: *common
+    command: ["snsauto", "worker", "run"]
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  snsauto-data:

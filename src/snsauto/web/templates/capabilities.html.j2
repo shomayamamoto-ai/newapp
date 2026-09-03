@@ -26,6 +26,37 @@
   <code>snsauto research import &lt;csv&gt;</code> で手動収集またはベンダー取得データを取り込んでください。
 </div>
 
+<h2>公開ストレージ</h2>
+{% if storage.configured %}
+<div class="card">
+  <div class="row" style="gap:14px">
+    <span class="pill ok">{{ storage.backend }}</span>
+    <span class="sub">リンク: {{ storage.links }}</span>
+    {% if storage.bucket %}<span class="sub mono">{{ storage.bucket }}</span>{% endif %}
+    {% if storage.public_base_url %}<span class="sub mono">{{ storage.public_base_url }}</span>{% endif %}
+  </div>
+</div>
+{% else %}
+<div class="note warn">
+  <strong>未設定です。</strong> {{ storage.error }}<br>
+  Instagram は動画を自社サーバーから取りに来る仕様のため、公開HTTPS URL が無いと投稿できません。
+  <code>STORAGE_BACKEND=s3</code> か <code>STORAGE_BACKEND=local</code>（＋<code>SNSAUTO_PUBLIC_BASE_URL</code>）を設定してください。
+</div>
+{% endif %}
+
+<h2>失敗通知</h2>
+<div class="card">
+  {% if mail_configured %}
+    <span class="pill ok">メール有効</span>
+    <span class="sub mono" style="margin-left:8px">{{ alert_email_to }}</span>
+  {% else %}
+    <span class="pill warn">メール未設定</span>
+    <span class="sub" style="margin-left:8px">
+      失敗はダッシュボードの「要対応」に出ます。メールも受け取るなら
+      <code>SMTP_HOST</code> と <code>ALERT_EMAIL_TO</code> を設定してください。</span>
+  {% endif %}
+</div>
+
 <h2>ローカル環境</h2>
 <div class="grid g2">
   {% for item in environment %}

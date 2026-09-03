@@ -81,6 +81,26 @@ class Settings(BaseSettings):
     session_hours: int = Field(12, alias="SNSAUTO_SESSION_HOURS")
     cookie_secure: bool = Field(True, alias="SNSAUTO_COOKIE_SECURE")
 
+    # Public asset hosting (required for Instagram publishing)
+    storage_backend: str = Field("none", alias="STORAGE_BACKEND")  # s3 | local | none
+    public_base_url: str | None = Field(None, alias="SNSAUTO_PUBLIC_BASE_URL")
+    s3_bucket: str | None = Field(None, alias="S3_BUCKET")
+    s3_endpoint_url: str | None = Field(None, alias="S3_ENDPOINT_URL")
+    s3_region: str | None = Field(None, alias="S3_REGION")
+    s3_access_key: str | None = Field(None, alias="S3_ACCESS_KEY")
+    s3_secret_key: str | None = Field(None, alias="S3_SECRET_KEY")
+    s3_public_base_url: str | None = Field(None, alias="S3_PUBLIC_BASE_URL")
+    s3_expires_in: int = Field(21600, alias="S3_EXPIRES_IN")
+
+    # Failure notifications
+    alert_email_to: str | None = Field(None, alias="ALERT_EMAIL_TO")
+    smtp_host: str | None = Field(None, alias="SMTP_HOST")
+    smtp_port: int = Field(587, alias="SMTP_PORT")
+    smtp_user: str | None = Field(None, alias="SMTP_USER")
+    smtp_password: str | None = Field(None, alias="SMTP_PASSWORD")
+    smtp_from: str | None = Field(None, alias="SMTP_FROM")
+    smtp_starttls: bool = Field(True, alias="SMTP_STARTTLS")
+
     # Worker
     worker_interval_sec: float = Field(60.0, alias="SNSAUTO_WORKER_INTERVAL")
     # Snapshot cadence after publication: dense early, sparse later.

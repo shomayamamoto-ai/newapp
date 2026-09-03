@@ -48,6 +48,7 @@ from .platforms import (
     get_adapter,
 )
 from .reporting.service import ReportService
+from .storage import StorageError, build_storage
 from .research.keyword import ResearchService
 from .research.structure import StructureService
 
@@ -105,6 +106,7 @@ class Pipeline:
         self.metrics = MetricsCollector(session, self.settings)
         self.pdca = PdcaService(session, self.llm)
         self.reports = ReportService(session, self.settings)
+        self.storage = build_storage(self.settings)
 
     # ---------- stages ----------
 
@@ -257,8 +259,16 @@ class Pipeline:
                 title=script.title,
                 hashtags=script.hashtags or [],
                 scheduled_for=scheduled_for,
-                extra=extra or {},
+                extra=dict(extra or {}),
             )
+            if platform is Platform.INSTAGRAM and "video_url" not in request.extra:
+                try:
+                    request.extra["video_url"] = self.host_render(render).url
+                except StorageError as exc:
+                    publication.error = f"instagram needs a public video URL: {exc}"
+                    publication.status = PublicationStatus.FAILED
+                    log.error("instagram publish blocked: %s", exc)
+                    continue
             try:
                 result = adapter.publish(request)
                 publication.external_id = result.external_id
@@ -276,6 +286,24 @@ class Pipeline:
 
         self.session.flush()
         return published
+
+    def host_render(self, render: Render):
+        """Put a render somewhere publicly fetchable and return the asset."""
+        if self.storage is None:
+            raise StorageError(
+                "no public storage configured. Set STORAGE_BACKEND=s3 or "
+                "STORAGE_BACKEND=local with SNSAUTO_PUBLIC_BASE_URL."
+            )
+        asset = self.storage.upload(render.path)
+        render.meta = {
+            **(render.meta or {}),
+            "public": {
+                "url": asset.url, "key": asset.key, "backend": asset.backend,
+                "expires_in": asset.expires_in,
+            },
+        }
+        self.session.flush()
+        return asset
 
     # ---------- the whole chain ----------
 

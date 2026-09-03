@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_settings
@@ -28,9 +28,51 @@ def get_engine():
     return _engine
 
 
+ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+
+
+def _alembic_config():
+    from alembic.config import Config
+
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option("script_location", str(ALEMBIC_INI.parent / "alembic"))
+    config.set_main_option("sqlalchemy.url", get_settings().db_url)
+    return config
+
+
 def init_db() -> None:
-    """Create all tables. Safe to call repeatedly."""
-    Base.metadata.create_all(get_engine())
+    """Bring the schema up to date. Safe to call repeatedly.
+
+    Uses Alembic when it is available, because a long-running install
+    accumulates data that ``create_all`` cannot migrate - it creates missing
+    tables but never adds a column to an existing one, which silently breaks
+    the app after any schema change.
+
+    A database created before migrations existed has tables but no version
+    stamp; stamping it rather than upgrading avoids trying to re-create what
+    is already there.
+    """
+    engine = get_engine()
+    if not ALEMBIC_INI.exists():
+        Base.metadata.create_all(engine)
+        return
+
+    try:
+        from alembic import command
+        from alembic.runtime.migration import MigrationContext
+    except ImportError:
+        Base.metadata.create_all(engine)
+        return
+
+    config = _alembic_config()
+    with engine.connect() as connection:
+        stamped = MigrationContext.configure(connection).get_current_revision()
+        has_tables = inspect(engine).has_table("projects")
+
+    if stamped is None and has_tables:
+        command.stamp(config, "head")
+        return
+    command.upgrade(config, "head")
 
 
 @contextmanager

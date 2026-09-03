@@ -3,6 +3,32 @@
 {% block subheading %}{{ projects | length }} プロジェクト ・ {{ totals.runs }} 調査 ・ {{ totals.renders }} 動画 ・ {{ totals.publications }} 投稿{% endblock %}
 
 {% block content %}
+{% if alerts %}
+<h2 style="margin-top:0">要対応 <span class="pill bad">{{ alerts | length }}</span></h2>
+<table>
+  <thead><tr><th>内容</th><th>発生元</th><th class="num">回数</th><th>最終</th><th></th></tr></thead>
+  <tbody>
+  {% for alert in alerts %}
+    <tr>
+      <td><strong>{{ alert.title }}</strong>
+        {% if alert.detail %}<div class="sub trunc">{{ alert.detail }}</div>{% endif %}</td>
+      <td class="mono sub">{{ alert.source }}</td>
+      <td class="num">{{ alert.count }}</td>
+      <td class="sub">{{ alert.last_seen_at | dt }}</td>
+      <td>
+        {% if user and user.can_write %}
+        <form method="post" action="/alerts/{{ alert.id }}/ack">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn ghost" style="padding:4px 10px;font-size:11px">対応済み</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <div class="grid g4">
   <div class="card"><div class="stat-label">競合データ</div>
     <div class="stat">{{ totals.posts | int_ }}</div><div class="stat-note">{{ totals.runs }} 回の調査</div></div>
