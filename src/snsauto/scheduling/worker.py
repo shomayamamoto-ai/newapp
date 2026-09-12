@@ -31,7 +31,8 @@ from ..models import (
     PublicationStatus,
     utcnow,
 )
-from ..platforms import Capability, PlatformError, PublishRequest, get_adapter
+from ..platforms import Capability, PlatformError, PublishRequest, adapter_for_account
+from ..platforms.accounts import AccountService
 
 log = logging.getLogger(__name__)
 
@@ -127,12 +128,32 @@ class Worker:
         if render is None or not render.path:
             return self._fail(session, publication, "no render attached")
 
-        adapter = get_adapter(publication.platform, settings=self.settings)
+        adapter, credentials = adapter_for_account(
+            publication.platform, session, self.settings,
+            publication.project_id, publication.account_id,
+        )
         if Capability.PUBLISH not in adapter.capabilities():
             return self._fail(
                 session, publication,
-                f"{publication.platform.value}: publish credentials not configured",
+                f"{publication.platform.value} のアカウントが未連携です。"
+                "「アカウント連携」から接続してください。",
             )
+
+        accounts = AccountService(session, self.settings)
+        account_id = credentials.account_id if credentials else None
+        rate = accounts.check_rate(publication.platform, account_id)
+        if not rate["allowed"]:
+            # Leave it scheduled: the window reopens and the next tick retries,
+            # which is what a cap means - not a permanent failure.
+            publication.error = rate["reason"]
+            publication.claimed_by = None
+            session.flush()
+            log.info("deferring %s: %s", publication.id, rate["reason"])
+            return {
+                "publication_id": publication.id,
+                "platform": publication.platform.value,
+                "status": "deferred", "reason": rate["reason"],
+            }
 
         request = PublishRequest(
             video_path=render.path,
@@ -144,7 +165,13 @@ class Worker:
         try:
             result = adapter.publish(request)
         except PlatformError as exc:
+            accounts.record_attempt(
+                publication.platform, account_id, publication.id, False, str(exc)
+            )
             return self._fail(session, publication, str(exc))
+        accounts.record_attempt(
+            publication.platform, account_id, publication.id, True
+        )
 
         publication.external_id = result.external_id
         publication.external_url = result.url
@@ -194,13 +221,37 @@ class Worker:
 
     # ---------- loop ----------
 
+    def refresh_tokens(self, session, now: datetime | None = None) -> list[dict]:
+        """Renew tokens before they lapse.
+
+        TikTok's access token lasts 24 hours and Instagram's 60 days, so an
+        unattended install that never refreshes stops posting without warning.
+        """
+        from ..notify import AlertService
+
+        results = AccountService(session, self.settings).refresh_due(now)
+        for row in results:
+            if row["status"] == "failed":
+                AlertService(session, self.settings).raise_alert(
+                    source="worker.token",
+                    title=f"{row['platform']} のトークン更新に失敗しました",
+                    detail=(row.get("error") or "")
+                    + "\n再連携が必要な可能性があります。",
+                    context={"account_id": row["account_id"]},
+                )
+        return results
+
     def tick(self, now: datetime | None = None) -> dict:
         with self.session_factory() as session:
+            # Refresh first: a token that lapses mid-tick would fail the
+            # publish that follows it.
+            refreshed = self.refresh_tokens(session, now)
             published = self.publish_due(session, now)
             snapshots = self.collect_due(session, now)
             session.commit()
         return {
             "at": (now or datetime.now(timezone.utc)).isoformat(),
+            "tokens_refreshed": refreshed,
             "published": published,
             "snapshots": len(snapshots),
         }
@@ -212,7 +263,7 @@ class Worker:
         while max_ticks is None or ticks < max_ticks:
             try:
                 summary = self.tick()
-                if summary["published"] or summary["snapshots"]:
+                if summary["published"] or summary["snapshots"] or summary["tokens_refreshed"]:
                     log.info("tick: %s", summary)
             except Exception:
                 # A worker that dies on one bad row stops publishing everything.

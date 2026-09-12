@@ -1,0 +1,116 @@
+{% extends "layout.html.j2" %}
+{% block heading %}アカウント連携{% endblock %}
+{% block subheading %}各SNSの公式APIでアカウントを接続します。接続するとそのアカウントとして自動投稿できます{% endblock %}
+
+{% block content %}
+{% if error %}<div class="note warn"><strong>連携できませんでした:</strong> {{ error }}</div>{% endif %}
+{% if connected %}<div class="note"><strong>{{ connected }}</strong></div>{% endif %}
+
+{% for row in rows %}
+<h2>{{ row.platform.value | upper }}</h2>
+
+{% if row.accounts %}
+<table>
+  <thead><tr><th>アカウント</th><th>状態</th><th>有効期限</th><th class="num">24h投稿</th><th></th></tr></thead>
+  <tbody>
+  {% for account in row.accounts %}
+    {% set remaining = account.seconds_until_expiry() %}
+    <tr>
+      <td>
+        <strong>{{ account.display_name or account.external_id }}</strong>
+        {% if account.username %}<span class="sub">@{{ account.username }}</span>{% endif %}
+        <div class="sub mono">{{ account.external_id }}</div>
+      </td>
+      <td>
+        {% if account.refresh_error %}<span class="pill bad">更新失敗</span>
+        {% elif account.is_expired %}<span class="pill bad">失効</span>
+        {% else %}<span class="pill ok">接続中</span>{% endif %}
+      </td>
+      <td class="sub">
+        {% if remaining is none %}期限なし
+        {% elif remaining <= 0 %}期限切れ
+        {% else %}あと {{ (remaining / 3600) | round(1) }} 時間
+          <div class="sub">{{ account.expires_at | dt }}</div>{% endif %}
+      </td>
+      <td class="num">{{ row.rate.used_24h }}{% if row.rate.cap %} / {{ row.rate.cap }}{% endif %}</td>
+      <td>
+        {% if user and user.can_publish %}
+        <div class="row" style="gap:5px">
+          {% if row.readiness.refreshable %}
+          <form method="post" action="/accounts/{{ account.id }}/refresh">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn ghost" style="padding:4px 10px;font-size:11px">今すぐ更新</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/accounts/{{ account.id }}/disconnect">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn ghost" style="padding:4px 10px;font-size:11px">解除</button>
+          </form>
+        </div>
+        {% endif %}
+      </td>
+    </tr>
+    {% if account.refresh_error %}
+    <tr><td colspan="5" class="sub" style="color:var(--bad)">{{ account.refresh_error | truncate(200) }}</td></tr>
+    {% endif %}
+  {% endfor %}
+  </tbody>
+</table>
+{% elif row.env_fallback %}
+<div class="note">
+  環境変数のトークンを使用中です。UIから接続し直すと、期限切れ前に自動更新されるようになります。
+</div>
+{% else %}
+<p class="empty">未接続です。</p>
+{% endif %}
+
+{% if not row.rate.allowed %}
+<div class="note warn">{{ row.rate.reason }}</div>
+{% endif %}
+
+{% if row.readiness.ready %}
+  {% if user and user.can_publish %}
+  <form class="act" method="post" action="/connect/{{ row.platform.value }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="f">
+      <label for="p-{{ row.platform.value }}">紐づけるプロジェクト</label>
+      <select id="p-{{ row.platform.value }}" name="project_id">
+        <option value="">すべてのプロジェクトで使う</option>
+        {% for p in projects %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="btn">{{ row.platform.value | upper }} を接続</button>
+  </form>
+  {% else %}
+  <p class="sub">アカウントの接続は管理者のみ実行できます。</p>
+  {% endif %}
+{% elif row.accounts %}
+{# Already working - this only blocks adding another account, so say it quietly. #}
+<p class="sub">追加で接続するには設定が必要です: {{ row.readiness.reason }}</p>
+{% else %}
+<div class="note warn">
+  <strong>接続の準備ができていません:</strong> {{ row.readiness.reason }}
+</div>
+{% endif %}
+{% endfor %}
+
+<h2>仕組みと制限</h2>
+<table>
+  <thead><tr><th>プラットフォーム</th><th>トークンの寿命</th><th>自動更新</th><th>投稿上限</th></tr></thead>
+  <tbody>
+    <tr><td><strong>YOUTUBE</strong></td><td>アクセス約1時間／リフレッシュは無期限</td>
+        <td><span class="pill ok">対応</span></td><td>APIクォータ単位（本数ではない）</td></tr>
+    <tr><td><strong>TIKTOK</strong></td><td>アクセス24時間／リフレッシュ365日</td>
+        <td><span class="pill ok">対応</span></td><td>1日25本・アップロード開始は毎分6回</td></tr>
+    <tr><td><strong>INSTAGRAM</strong></td><td>長期トークン60日（更新して延長）</td>
+        <td><span class="pill ok">対応</span></td><td>API側に問い合わせて残量を確認</td></tr>
+    <tr><td><strong>X</strong></td><td>OAuth 1.0a（期限なし）</td>
+        <td><span class="pill mute">不要</span></td><td>プラン依存</td></tr>
+  </tbody>
+</table>
+<p class="sub">
+  いずれも各社の公式APIを使った投稿です。スクレイピングや自動操作は行っていないため、
+  規約の範囲内で運用できます。ワーカーは期限の
+  {{ '%.0f' | format(refresh_margin | default(6)) }} 時間前にトークンを自動更新します。
+</p>
+{% endblock %}

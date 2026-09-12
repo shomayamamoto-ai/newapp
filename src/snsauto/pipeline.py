@@ -31,6 +31,7 @@ from .llm import build_client
 from .media.assemble import PLATFORM_SPECS, ShotInput, VideoSpec, assemble_video
 from .models import (
     Platform,
+    SocialAccount,
     Project,
     Publication,
     PublicationStatus,
@@ -45,8 +46,9 @@ from .platforms import (
     PlatformError,
     PostRecord,
     PublishRequest,
-    get_adapter,
+    adapter_for_account,
 )
+from .platforms.accounts import AccountService
 from .reporting.service import ReportService
 from .storage import StorageError, build_storage
 from .research.keyword import ResearchService
@@ -81,8 +83,8 @@ class PipelineResult:
             "visuals": self.visuals.summary() if self.visuals else None,
             "voice": self.voice.summary() if self.voice else None,
             "publications": [
-                {"platform": p.platform.value, "status": p.status.value,
-                 "url": p.external_url, "error": p.error}
+                {"platform": p.platform.value, "account_id": p.account_id,
+                 "status": p.status.value, "url": p.external_url, "error": p.error}
                 for p in self.publications
             ],
             "reports": self.report_paths,
@@ -222,21 +224,56 @@ class Pipeline:
         self.session.flush()
         return render
 
+    def publish_targets(
+        self,
+        project: Project,
+        platforms: list[Platform] | None = None,
+        account_ids: list[int] | None = None,
+    ) -> list[tuple[Platform, int | None]]:
+        """Expand a request into concrete (platform, account) pairs.
+
+        Naming accounts posts to exactly those. Naming platforms posts to every
+        account connected for them - which is what "運用中の全アカウントに出す"
+        means - and falls back to a single unbound target when an install has
+        no connected accounts yet.
+        """
+        accounts = AccountService(self.session, self.settings)
+        targets: list[tuple[Platform, int | None]] = []
+
+        for account_id in account_ids or []:
+            account = self.session.get(SocialAccount, account_id)
+            if account is not None and account.is_active:
+                targets.append((account.platform, account.id))
+
+        for platform in platforms or []:
+            connected = accounts.targets(platform, project.id)
+            if connected:
+                targets.extend(
+                    (platform, a.id) for a in connected
+                    if (platform, a.id) not in targets
+                )
+            elif (platform, None) not in targets:
+                targets.append((platform, None))
+
+        return targets
+
     def publish(
         self,
         project: Project,
         render: Render,
         script: Script,
-        platforms: list[Platform],
+        platforms: list[Platform] | None = None,
         scheduled_for: datetime | None = None,
         dry_run: bool = False,
         extra: dict | None = None,
+        account_ids: list[int] | None = None,
     ) -> list[Publication]:
         published = []
-        for platform in platforms:
+        for platform, account_id in self.publish_targets(project, platforms, account_ids):
             publication = Publication(
                 project_id=project.id, render_id=render.id, script_id=script.id,
-                platform=platform, caption=script.hook or script.title,
+                platform=platform, account_id=account_id,
+                caption=script.hook or script.title,
                 hashtags=script.hashtags or [], scheduled_for=scheduled_for,
                 status=PublicationStatus.SCHEDULED if scheduled_for else PublicationStatus.DRAFT,
             )
@@ -247,10 +284,29 @@ class Pipeline:
             if dry_run:
                 continue
 
-            adapter = get_adapter(platform, settings=self.settings)
+            adapter, credentials = adapter_for_account(
+                platform, self.session, self.settings, project.id, account_id
+            )
             if Capability.PUBLISH not in adapter.capabilities():
-                publication.error = "publish capability unavailable (missing credentials)"
+                publication.error = (
+                    f"{platform.value} のアカウントが未連携です。"
+                    "「アカウント連携」から接続してください。"
+                )
                 publication.status = PublicationStatus.DRAFT
+                continue
+
+            accounts = AccountService(self.session, self.settings)
+            # Caps are per account, so two connected accounts each get a full
+            # allowance rather than sharing one.
+            rate = accounts.check_rate(
+                platform, credentials.account_id if credentials else None
+            )
+            if not rate["allowed"]:
+                # Stop before the platform rejects it: on some platforms a
+                # refused post still consumes a slot in the window.
+                publication.error = rate["reason"]
+                publication.status = PublicationStatus.SCHEDULED
+                log.warning("rate limit reached for %s: %s", platform.value, rate["reason"])
                 continue
 
             request = PublishRequest(
@@ -269,6 +325,7 @@ class Pipeline:
                     publication.status = PublicationStatus.FAILED
                     log.error("instagram publish blocked: %s", exc)
                     continue
+            account_id = credentials.account_id if credentials else None
             try:
                 result = adapter.publish(request)
                 publication.external_id = result.external_id
@@ -279,9 +336,13 @@ class Pipeline:
                     else PublicationStatus.PUBLISHED
                 )
                 publication.published_at = utcnow()
+                accounts.record_attempt(platform, account_id, publication.id, True)
             except PlatformError as exc:
                 publication.error = str(exc)
                 publication.status = PublicationStatus.FAILED
+                accounts.record_attempt(
+                    platform, account_id, publication.id, False, str(exc)
+                )
                 log.error("publish to %s failed: %s", platform.value, exc)
 
         self.session.flush()
@@ -321,6 +382,7 @@ class Pipeline:
         make_reports: bool = True,
         visual_mode: str | None = None,
         narrate: bool = True,
+        account_ids: list[int] | None = None,
     ) -> PipelineResult:
         result = PipelineResult(project=project)
 
@@ -370,9 +432,10 @@ class Pipeline:
             result.errors.append(f"render: {exc}")
 
         # 7. publish
-        if result.render and publish_to:
+        if result.render and (publish_to or account_ids):
             result.publications = self.publish(
-                project, result.render, result.script, publish_to, dry_run=dry_run
+                project, result.render, result.script, publish_to,
+                dry_run=dry_run, account_ids=account_ids,
             )
 
         # 8. reports

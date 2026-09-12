@@ -108,6 +108,15 @@ class BaseAdapter:
     """Shared defaults; subclasses override what the platform supports."""
 
     platform: Platform
+    # Set when the caller resolved a connected account; adapters prefer it over
+    # environment variables so a refreshed token takes effect immediately.
+    credentials = None
+
+    def token(self) -> str | None:
+        return getattr(self.credentials, "access_token", None)
+
+    def account_external_id(self) -> str | None:
+        return getattr(self.credentials, "external_id", None)
 
     def capabilities(self) -> set[Capability]:
         return set()

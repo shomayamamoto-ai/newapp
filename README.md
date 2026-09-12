@@ -153,6 +153,63 @@ snsauto ab review 1
 
 ---
 
+## アカウント連携と自動投稿
+
+各SNSの**公式API**でアカウントを接続します。接続後はそのアカウントとして自動投稿できます。
+スクレイピングや自動操作は一切行っていないため、規約の範囲内で運用できます。
+
+```bash
+snsauto serve      # → /accounts から各SNSを接続
+```
+
+| プラットフォーム | トークンの寿命 | 自動更新 | 投稿上限 |
+|---|---|:--:|---|
+| YouTube | アクセス約1時間／リフレッシュは無期限 | ✅ | APIクォータ単位（本数ではない） |
+| TikTok | アクセス24時間／リフレッシュ365日 | ✅ | 1日25本・アップロード開始は毎分6回 |
+| Instagram | 長期トークン60日（更新して延長） | ✅ | API側に問い合わせて残量を確認 |
+| X | OAuth 1.0a（期限なし） | 不要 | プラン依存 |
+
+接続に必要なアプリ資格情報:
+
+```ini
+YOUTUBE_CLIENT_ID= / YOUTUBE_CLIENT_SECRET=      # Google Cloud
+TIKTOK_CLIENT_KEY= / TIKTOK_CLIENT_SECRET=       # TikTok for Developers
+FACEBOOK_APP_ID=  / FACEBOOK_APP_SECRET=         # Instagram は Facebook アプリ経由
+X_API_KEY=        / X_API_SECRET=                # X Developer Portal
+SNSAUTO_PUBLIC_BASE_URL=https://...              # 承認後の戻り先（各社に登録する）
+```
+
+**トークンは自動更新されます。** ワーカーが期限の6時間前に更新するので、常時稼働でも
+止まりません。TikTokは24時間で失効するため、これが無いと翌日には投稿できなくなります。
+更新に失敗した場合はアラートとメールで通知されます。
+
+**投稿上限はアプリ側でも数えています。** 上限に達した投稿は失敗ではなく「延期」として
+予約状態のまま残り、枠が空いた次のtickで自動的に再試行されます。上限に当たってから
+リトライを繰り返すと、その日の枠をエラーで使い切ってしまうためです。
+Instagramについては、ドキュメントの数字（25／50／100）が食い違うため、
+`content_publishing_limit` でアカウント自身の残量を問い合わせます。
+
+### 複数アカウントの運用
+
+1つのプラットフォームに複数アカウントを接続できます。プロジェクト単位でも、
+全プロジェクト共通でも紐づけられます。
+
+```bash
+snsauto account list                    # 接続中のアカウントと期限
+snsauto account limits                  # 投稿枠の消費状況
+snsauto create all ブランド "キーワード" --publish tiktok        # tiktokの全アカウントに投稿
+snsauto create all ブランド "キーワード" --account 1 --account 4  # 指定アカウントだけに投稿
+```
+
+Web UIでは投稿先をアカウント単位のチェックボックスで選びます。
+上限に達したアカウントとトークンが失効したアカウントは選択できない状態で表示されます。
+
+**投稿枠はアカウントごとに数えます。** 1つのアカウントが上限に達しても、
+他のアカウントへの投稿は止まりません。実績の収集も、投稿したアカウントのトークンで行います
+（別のアカウントのトークンでは同じ投稿IDが「見つからない」と返ってくるためです）。
+
+---
+
 ## 公開ストレージ（Instagram投稿に必須）
 
 Instagram は動画のバイト列を受け取らず、**こちらが渡したURLを Meta のサーバーが取りに来ます**。
@@ -366,7 +423,7 @@ snsauto db revision -m "add column"   # モデル変更から自動生成
 ## 開発
 
 ```bash
-python -m pytest                    # 305 tests
+python -m pytest                    # 380 tests
 python -m pytest -m "not slow"      # ffmpeg/ブラウザを使わない分だけ
 ```
 

@@ -28,22 +28,47 @@ _REGISTRY = {
 }
 
 
-def get_adapter(platform: Platform | str, settings=None) -> BaseAdapter:
+def get_adapter(
+    platform: Platform | str, settings=None, credentials=None
+) -> BaseAdapter:
+    """Build an adapter, optionally bound to a connected account's credentials."""
     if isinstance(platform, str):
         platform = Platform(platform)
     try:
         cls = _REGISTRY[platform]
     except KeyError:
         raise ValueError(f"unknown platform: {platform}") from None
-    return cls(settings=settings)
+    return cls(settings=settings, credentials=credentials)
 
 
-def capability_matrix(settings=None) -> dict[str, dict[str, bool]]:
-    """What this installation can actually do right now, given its credentials."""
+def adapter_for_account(
+    platform, session, settings=None, project_id=None, account_id=None
+):
+    """Adapter bound to a specific account, or to this project's default."""
+    from .accounts import AccountService
+
+    credentials = AccountService(session, settings).resolve(
+        platform, project_id, account_id
+    )
+    return get_adapter(platform, settings, credentials), credentials
+
+
+def capability_matrix(settings=None, session=None) -> dict[str, dict[str, bool]]:
+    """What this installation can actually do right now.
+
+    With a session, connected accounts are taken into account; without one,
+    only environment credentials are considered.
+    """
+    from .accounts import AccountService
+
+    service = AccountService(session, settings) if session is not None else None
     matrix = {}
     for platform in Platform:
-        caps = get_adapter(platform, settings=settings).capabilities()
+        credentials = service.resolve(platform) if service else None
+        caps = get_adapter(platform, settings, credentials).capabilities()
         matrix[platform.value] = {c.value: (c in caps) for c in Capability}
+        if credentials is not None:
+            matrix[platform.value]["source"] = credentials.source
     return matrix
 
 
@@ -51,5 +76,6 @@ __all__ = [
     "BaseAdapter", "Capability", "CapabilityUnavailable", "CredentialsMissing",
     "MetricRecord", "PlatformAdapter", "PlatformError", "PostRecord",
     "PublishRequest", "PublishResult", "InstagramAdapter", "TikTokAdapter",
-    "XAdapter", "YouTubeAdapter", "get_adapter", "capability_matrix",
+    "XAdapter", "YouTubeAdapter", "get_adapter", "adapter_for_account",
+    "capability_matrix",
 ]

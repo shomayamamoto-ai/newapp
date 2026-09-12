@@ -13,7 +13,7 @@ from ..models import (
     Publication,
     PublicationStatus,
 )
-from ..platforms import Capability, PlatformError, get_adapter
+from ..platforms import Capability, PlatformError, adapter_for_account
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,12 @@ class MetricsCollector:
     def collect(self, publication: Publication) -> MetricSnapshot | None:
         if not publication.external_id:
             return None
-        adapter = get_adapter(publication.platform, settings=self.settings)
+        # Metrics have to be fetched with the token of the account that posted
+        # it; another account's token returns "not found" for the same id.
+        adapter, _ = adapter_for_account(
+            publication.platform, self.session, self.settings,
+            publication.project_id, publication.account_id,
+        )
         if Capability.INSIGHTS not in adapter.capabilities():
             log.info("insights unavailable for %s - skipping", publication.platform.value)
             return None

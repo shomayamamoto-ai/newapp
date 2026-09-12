@@ -34,14 +34,47 @@ API = "https://graph.facebook.com/v21.0"
 class InstagramAdapter(BaseAdapter):
     platform = Platform.INSTAGRAM
 
-    def __init__(self, settings=None, client: httpx.Client | None = None):
+    def __init__(self, settings=None, client: httpx.Client | None = None,
+                 credentials=None):
         self.settings = settings or get_settings()
         self._client = client or httpx.Client(timeout=60.0)
+        self.credentials = credentials
+
+    def _token(self) -> str | None:
+        return self.token() or self.settings.ig_access_token
+
+    def _user_id(self) -> str | None:
+        return self.account_external_id() or self.settings.ig_user_id
 
     def capabilities(self) -> set[Capability]:
-        if self.settings.ig_access_token and self.settings.ig_user_id:
+        if self._token() and self._user_id():
             return {Capability.SEARCH, Capability.PUBLISH, Capability.INSIGHTS}
         return set()
+
+    def publishing_limit(self) -> dict:
+        """Ask Instagram how much of its own publishing quota is left.
+
+        Meta's documentation quotes 25, 50 and 100 in different places, so the
+        only trustworthy number is the one the account reports.
+        """
+        self._require(Capability.PUBLISH)
+        data = self._get(
+            f"{API}/{self._user_id()}/content_publishing_limit",
+            {"fields": "config,quota_usage"},
+        )
+        rows = data.get("data") or [{}]
+        row = rows[0]
+        config = row.get("config") or {}
+        quota = int(row.get("quota_usage") or 0)
+        cap = int(config.get("quota_total") or 0) or None
+        return {
+            "used": quota,
+            "cap": cap,
+            "remaining": (cap - quota) if cap else None,
+            "window_hours": config.get("quota_duration", 86400) / 3600
+            if config.get("quota_duration") else 24,
+            "raw": row,
+        }
 
     # ---------- research ----------
 
@@ -50,7 +83,7 @@ class InstagramAdapter(BaseAdapter):
         tag = keyword.lstrip("#").replace(" ", "")
         found = self._get(
             f"{API}/ig_hashtag_search",
-            {"user_id": self.settings.ig_user_id, "q": tag},
+            {"user_id": self._user_id(), "q": tag},
         )
         items = found.get("data") or []
         if not items:
@@ -60,7 +93,7 @@ class InstagramAdapter(BaseAdapter):
         media = self._get(
             f"{API}/{hashtag_id}/top_media",
             {
-                "user_id": self.settings.ig_user_id,
+                "user_id": self._user_id(),
                 "fields": "id,caption,media_type,permalink,like_count,comments_count,timestamp",
                 "limit": min(50, limit),
             },
@@ -92,7 +125,7 @@ class InstagramAdapter(BaseAdapter):
                 "to your own storage and pass extra={'video_url': ...}."
             )
 
-        ig_user = self.settings.ig_user_id
+        ig_user = self._user_id()
         container = self._post(
             f"{API}/{ig_user}/media",
             {
@@ -175,14 +208,14 @@ class InstagramAdapter(BaseAdapter):
     # ---------- plumbing ----------
 
     def _get(self, url: str, params: dict) -> dict:
-        params = {**params, "access_token": self.settings.ig_access_token}
+        params = {**params, "access_token": self._token()}
         resp = self._client.get(url, params=params)
         if resp.status_code >= 400:
             raise PlatformError(f"Instagram API {resp.status_code}: {resp.text}")
         return resp.json()
 
     def _post(self, url: str, data: dict) -> dict:
-        data = {**data, "access_token": self.settings.ig_access_token}
+        data = {**data, "access_token": self._token()}
         resp = self._client.post(url, data=data)
         if resp.status_code >= 400:
             raise PlatformError(f"Instagram API {resp.status_code}: {resp.text}")

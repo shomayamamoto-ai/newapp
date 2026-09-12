@@ -186,11 +186,12 @@ def _publish(runner, session, job, params) -> dict:
         [Platform(p) for p in params.get("platforms", [])],
         scheduled_for=scheduled_for,
         dry_run=bool(params.get("dry_run", True)),
+        account_ids=params.get("account_ids") or None,
     )
     return {
         "publications": [
-            {"id": p.id, "platform": p.platform.value, "status": p.status.value,
-             "url": p.external_url, "error": p.error}
+            {"id": p.id, "platform": p.platform.value, "account_id": p.account_id,
+             "status": p.status.value, "url": p.external_url, "error": p.error}
             for p in publications
         ]
     }

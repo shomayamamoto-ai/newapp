@@ -18,6 +18,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    MetaData,
     String,
     Text,
     UniqueConstraint,
@@ -29,8 +30,20 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# SQLite cannot ALTER a constraint, so Alembic rebuilds the table in "batch"
+# mode - which requires every constraint to have a name it can reproduce.
+# Without a convention, autogenerate fails on any foreign key it adds later.
+NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 class Platform(str, enum.Enum):
@@ -257,6 +270,9 @@ class Publication(Base, TimestampMixin):
     script_id: Mapped[int | None] = mapped_column(ForeignKey("scripts.id"))
 
     platform: Mapped[Platform] = mapped_column(Enum(Platform))
+    # Which connected account this was posted as. Null means "whichever account
+    # resolves at publish time", which is how single-account installs behave.
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("social_accounts.id"))
     status: Mapped[PublicationStatus] = mapped_column(
         Enum(PublicationStatus), default=PublicationStatus.DRAFT
     )
@@ -276,6 +292,9 @@ class Publication(Base, TimestampMixin):
 
     snapshots: Mapped[list["MetricSnapshot"]] = relationship(
         back_populates="publication", cascade="all, delete-orphan"
+    )
+    account: Mapped["SocialAccount | None"] = relationship(
+        foreign_keys=[account_id]
     )
 
 
@@ -494,3 +513,82 @@ class Alert(Base, TimestampMixin):
     @property
     def is_open(self) -> bool:
         return self.acknowledged_at is None
+
+
+class SocialAccount(Base, TimestampMixin):
+    """A connected platform account and its OAuth credentials.
+
+    Credentials live here rather than in environment variables for three
+    reasons: tokens have to be rewritten when they refresh, one install may
+    run several accounts, and the UI needs to show when a connection is about
+    to expire. Environment variables remain a fallback for single-account
+    setups.
+    """
+
+    __tablename__ = "social_accounts"
+    __table_args__ = (
+        UniqueConstraint("project_id", "platform", "external_id", name="uq_account"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    platform: Mapped[Platform] = mapped_column(Enum(Platform))
+
+    # The platform's own identifier, and something a human recognises.
+    external_id: Mapped[str] = mapped_column(String(200))
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    username: Mapped[str | None] = mapped_column(String(200))
+    avatar_url: Mapped[str | None] = mapped_column(String(600))
+
+    access_token: Mapped[str] = mapped_column(Text)
+    refresh_token: Mapped[str | None] = mapped_column(Text)
+    # X uses OAuth 1.0a, whose access token is a pair.
+    token_secret: Mapped[str | None] = mapped_column(Text)
+    scopes: Mapped[list] = mapped_column(JSON, default=list)
+
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    refresh_error: Mapped[str | None] = mapped_column(Text)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    project: Mapped["Project | None"] = relationship()
+
+    def seconds_until_expiry(self, now: datetime | None = None) -> float | None:
+        if self.expires_at is None:
+            return None
+        now = now or utcnow()
+        expires = self.expires_at
+        if expires.tzinfo is None and now.tzinfo is not None:
+            expires = expires.replace(tzinfo=now.tzinfo)
+        return (expires - now).total_seconds()
+
+    @property
+    def is_expired(self) -> bool:
+        remaining = self.seconds_until_expiry()
+        return remaining is not None and remaining <= 0
+
+    @property
+    def can_refresh(self) -> bool:
+        return bool(self.refresh_token)
+
+
+class PublishAttempt(Base):
+    """One publish call, kept so rate limits can be honoured locally.
+
+    TikTok allows 25 posts per account per day and Instagram enforces a rolling
+    window of its own. Counting our own calls lets the scheduler stop before
+    the platform rejects a post, rather than burning a slot on an error.
+    """
+
+    __tablename__ = "publish_attempts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("social_accounts.id"))
+    publication_id: Mapped[int | None] = mapped_column(ForeignKey("publications.id"))
+    platform: Mapped[Platform] = mapped_column(Enum(Platform))
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    succeeded: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text)

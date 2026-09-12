@@ -107,6 +107,38 @@ def read_session(token: str | None, secret: str) -> int | None:
     return int(uid) if isinstance(uid, int) else None
 
 
+def issue_session_payload(payload: str, secret: str, hours: int = 1) -> str:
+    """Sign an arbitrary short-lived payload (used for in-flight OAuth state).
+
+    Keeping the pending connect state in a signed cookie rather than the
+    database means an abandoned attempt leaves nothing to clean up.
+    """
+    body = json.dumps(
+        {"p": payload, "exp": int(time.time()) + hours * 3600}, separators=(",", ":")
+    ).encode()
+    return f"{_b64e(body)}.{_sign(body, secret)}"
+
+
+def read_session_payload(token: str | None, secret: str) -> str | None:
+    if not token or "." not in token:
+        return None
+    encoded, signature = token.rsplit(".", 1)
+    try:
+        body = _b64d(encoded)
+    except (ValueError, TypeError):
+        return None
+    if not hmac.compare_digest(_sign(body, secret), signature):
+        return None
+    try:
+        claims = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if int(claims.get("exp", 0)) < time.time():
+        return None
+    value = claims.get("p")
+    return value if isinstance(value, str) else None
+
+
 # ---------------- CSRF ----------------
 
 

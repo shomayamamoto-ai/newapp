@@ -46,14 +46,34 @@
 <h2>投稿</h2>
 <form class="act danger" method="post" action="/renders/{{ render.id }}/publish">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <div class="f"><label>投稿先</label>
+  <div class="f" style="flex:1;min-width:260px"><label>投稿するアカウント</label>
+    {% if publish_targets %}
+    <div style="display:grid;gap:5px">
+      {% for t in publish_targets %}
+      <span class="chk" style="display:flex;align-items:center;gap:6px">
+        <input id="ac-{{ t.id }}" name="accounts" type="checkbox" value="{{ t.id }}"
+               {{ 'disabled' if not t.rate.allowed or t.expired }}>
+        <label for="ac-{{ t.id }}">
+          <span class="pill mute">{{ t.platform }}</span> {{ t.label }}
+          {% if t.expired %}<span class="pill bad">トークン失効</span>
+          {% elif not t.rate.allowed %}<span class="pill warn">上限到達</span>
+          {% elif t.rate.cap %}<span class="sub">{{ t.rate.used_24h }}/{{ t.rate.cap }}</span>{% endif %}
+        </label>
+      </span>
+      {% endfor %}
+    </div>
+    {% else %}
     <div class="row" style="gap:12px">
       {% for p in platforms %}
       <span class="chk" style="display:flex;align-items:center;gap:4px">
         <input id="pl-{{ p }}" name="platforms" type="checkbox" value="{{ p }}">
         <label for="pl-{{ p }}">{{ p }}</label></span>
       {% endfor %}
-    </div></div>
+    </div>
+    <span class="sub">未連携のため、環境変数のトークンで投稿します。
+      <a href="/accounts">アカウント連携</a>すると複数アカウントに出し分けできます。</span>
+    {% endif %}
+  </div>
   <div class="f"><label for="psf">予約日時（空欄なら即時）</label>
     <input id="psf" name="scheduled_for" type="datetime-local"></div>
   <div class="f"><label for="pc">確認のため PUBLISH と入力</label>

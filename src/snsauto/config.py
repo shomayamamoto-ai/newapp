@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     tiktok_client_secret: str | None = Field(None, alias="TIKTOK_CLIENT_SECRET")
     tiktok_access_token: str | None = Field(None, alias="TIKTOK_ACCESS_TOKEN")
 
+    # Facebook app behind Instagram publishing (the API is only reachable
+    # through a Facebook app with an Instagram Business account attached).
+    facebook_app_id: str | None = Field(None, alias="FACEBOOK_APP_ID")
+    facebook_app_secret: str | None = Field(None, alias="FACEBOOK_APP_SECRET")
+
+    # Refresh a token this long before it expires. TikTok's is 24h, so the
+    # window has to be comfortably inside that.
+    token_refresh_margin_hours: float = Field(6.0, alias="SNSAUTO_TOKEN_REFRESH_MARGIN")
+
     # Image generation (stills)
     imagegen_provider: str = Field("placeholder", alias="IMAGEGEN_PROVIDER")
     imagegen_api_key: str | None = Field(None, alias="IMAGEGEN_API_KEY")

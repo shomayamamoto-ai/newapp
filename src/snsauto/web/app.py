@@ -12,6 +12,8 @@ workspace as a static directory would let a crafted path escape it.
 
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
@@ -25,6 +27,7 @@ from ..config import Settings, get_settings
 from ..db import get_engine, init_db
 from ..models import (
     Alert,
+    SocialAccount,
     Experiment,
     Job,
     JobStatus,
@@ -44,6 +47,8 @@ from ..models import (
 from . import auth as authlib
 from ..notify import AlertService
 from ..platforms import PostRecord, capability_matrix
+from ..platforms.accounts import AccountService
+from ..platforms.oauth import OAuthError, get_provider, oauth_readiness
 from ..storage import build_storage, storage_status
 from ..reporting.templates import _fmt_dt, _fmt_dur, _fmt_int, _fmt_pct
 from ..research.keyword import W_ENGAGEMENT, W_REACH, W_VELOCITY, summarize_corpus
@@ -243,7 +248,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      user=Depends(require_login)):
         return render(
             "capabilities.html.j2", session, request, user, nav="capabilities", page_title="接続状況",
-            matrix=capability_matrix(settings), requirements=REQUIREMENTS,
+            matrix=capability_matrix(settings, session), requirements=REQUIREMENTS,
             environment=_environment_report(settings),
             storage=storage_status(settings),
             mail_configured=bool(settings.smtp_host and settings.alert_email_to),
@@ -336,10 +341,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).first()
             if board else None
         )
+        service = AccountService(session, settings)
+        targets = []
+        for platform in Platform:
+            for account in service.targets(platform, script.project_id):
+                targets.append({
+                    "id": account.id, "platform": platform.value,
+                    "label": service.label(account),
+                    "rate": service.check_rate(platform, account.id),
+                    "expired": account.is_expired,
+                })
         return render(
             "script.html.j2", session, request, user, nav="project", project=script.project,
             page_title=script.title, script=script, storyboard=board,
-            render=render_row, job_id=job,
+            render=render_row, job_id=job, publish_targets=targets,
         )
 
     @app.get("/cycles/{cycle_id}", response_class=HTMLResponse)
@@ -416,8 +431,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ---------------- JSON ----------------
 
     @app.get("/api/capabilities")
-    def api_capabilities(user=Depends(require_login)):
-        return capability_matrix(settings)
+    def api_capabilities(session: Session = Depends(get_session), user=Depends(require_login)):
+        return capability_matrix(settings, session)
 
     @app.get("/api/projects")
     def api_projects(session: Session = Depends(get_session), user=Depends(require_login)):
@@ -592,8 +607,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/renders/{render_id}/publish")
     def action_publish(
         render_id: int, request: Request,
-        platforms: list[str] = Form([]), scheduled_for: str = Form(""),
-        confirm: str = Form(""), csrf_token: str = Form(""),
+        accounts: list[str] = Form([]), platforms: list[str] = Form([]),
+        scheduled_for: str = Form(""), confirm: str = Form(""),
+        csrf_token: str = Form(""),
         session: Session = Depends(get_session), user=Depends(require_publish),
     ):
         check_csrf(request, csrf_token)
@@ -604,7 +620,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # rather than a single click.
         if confirm != "PUBLISH":
             raise HTTPException(400, "確認欄に PUBLISH と入力してください")
-        if not platforms:
+        if not accounts and not platforms:
             raise HTTPException(400, "投稿先を1つ以上選んでください")
 
         board = session.get(Storyboard, render_row.storyboard_id)
@@ -614,6 +630,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "render_id": render_id,
             "script_id": script.id if script else None,
             "platforms": platforms,
+            "account_ids": [int(a) for a in accounts if str(a).isdigit()],
             "scheduled_for": scheduled_for or None,
             "dry_run": False,
         }, script.project_id if script else None,
@@ -663,6 +680,132 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render("experiment.html.j2", session, request, user, nav="project",
                       project=experiment.project, page_title=experiment.name,
                       experiment=experiment)
+
+    # ---------------- account connections ----------------
+
+    # OAuth state lives in the signed session cookie's sibling: a short-lived
+    # signed cookie. Keeping it out of the database means a half-finished
+    # connect attempt leaves nothing behind.
+    PENDING_COOKIE = "snsauto_oauth"
+
+    @app.get("/accounts", response_class=HTMLResponse)
+    def accounts_page(request: Request, project: int | None = None,
+                      error: str | None = None, connected: str | None = None,
+                      session: Session = Depends(get_session), user=Depends(require_login)):
+        service = AccountService(session, settings)
+        rows = []
+        for platform in Platform:
+            linked = [a for a in service.accounts(platform) if a.is_active]
+            rows.append({
+                "platform": platform,
+                "accounts": linked,
+                "readiness": oauth_readiness(settings).get(platform.value, {}),
+                "rate": service.check_rate(platform),
+                "env_fallback": service._from_env(platform) is not None,
+            })
+        return render("accounts.html.j2", session, request, user, nav="accounts",
+                      page_title="アカウント連携", rows=rows,
+                      error=error, connected=connected,
+                      projects=list(session.scalars(select(Project).order_by(Project.name))),
+                      selected_project=project,
+                      refresh_margin=settings.token_refresh_margin_hours)
+
+    @app.post("/connect/{platform}")
+    def connect_start(
+        platform: str, request: Request, project_id: str = Form(""),
+        csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_publish),
+    ):
+        check_csrf(request, csrf_token)
+        try:
+            provider = get_provider(platform, settings)
+            start = provider.start()
+        except OAuthError as exc:
+            return RedirectResponse(f"/accounts?error={exc}", status_code=303)
+
+        payload = json.dumps({
+            "platform": platform, "state": start.state,
+            "project_id": project_id or None, **start.extra,
+        })
+        response = RedirectResponse(start.url, status_code=303)
+        response.set_cookie(
+            PENDING_COOKIE, authlib.issue_session_payload(payload, secret, hours=1),
+            httponly=True, samesite="lax", secure=settings.cookie_secure, max_age=3600,
+        )
+        return response
+
+    @app.get("/connect/{platform}/callback")
+    def connect_callback(
+        platform: str, request: Request,
+        session: Session = Depends(get_session), user=Depends(require_publish),
+    ):
+        raw = authlib.read_session_payload(request.cookies.get(PENDING_COOKIE), secret)
+        pending = json.loads(raw) if raw else {}
+        params = dict(request.query_params)
+
+        if params.get("error"):
+            reason = params.get("error_description") or params["error"]
+            return RedirectResponse(f"/accounts?error={reason}", status_code=303)
+        if not pending or pending.get("platform") != platform:
+            return RedirectResponse(
+                "/accounts?error=連携の途中でセッションが切れました。もう一度やり直してください。",
+                status_code=303,
+            )
+        # OAuth 2.0 echoes `state`; OAuth 1.0a echoes `oauth_token` instead.
+        echoed = params.get("state") or params.get("oauth_token")
+        if echoed != pending.get("state"):
+            return RedirectResponse(
+                "/accounts?error=連携リクエストの照合に失敗しました（stateが一致しません）。",
+                status_code=303,
+            )
+
+        try:
+            provider = get_provider(platform, settings)
+            connected = provider.finish(params, pending)
+            project_id = pending.get("project_id")
+            account = AccountService(session, settings).save(
+                connected, int(project_id) if project_id else None
+            )
+            session.commit()
+        except (OAuthError, ValueError) as exc:
+            return RedirectResponse(f"/accounts?error={exc}", status_code=303)
+
+        response = RedirectResponse(
+            f"/accounts?connected={account.display_name or account.external_id}",
+            status_code=303,
+        )
+        response.delete_cookie(PENDING_COOKIE)
+        return response
+
+    @app.post("/accounts/{account_id}/refresh")
+    def account_refresh(
+        account_id: int, request: Request, csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_publish),
+    ):
+        check_csrf(request, csrf_token)
+        account = session.get(SocialAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "account not found")
+        try:
+            AccountService(session, settings).refresh(account)
+            session.commit()
+        except OAuthError as exc:
+            session.commit()
+            return RedirectResponse(f"/accounts?error={exc}", status_code=303)
+        return RedirectResponse("/accounts?connected=更新しました", status_code=303)
+
+    @app.post("/accounts/{account_id}/disconnect")
+    def account_disconnect(
+        account_id: int, request: Request, csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_publish),
+    ):
+        check_csrf(request, csrf_token)
+        account = session.get(SocialAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "account not found")
+        AccountService(session, settings).disconnect(account)
+        session.commit()
+        return RedirectResponse("/accounts?connected=解除しました", status_code=303)
 
     @app.get("/projects/{project_id}/brand", response_class=HTMLResponse)
     def brand_page(project_id: int, request: Request, saved: bool = False,

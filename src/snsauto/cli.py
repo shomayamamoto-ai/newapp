@@ -222,7 +222,8 @@ def create_all(
     platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
     duration: float = typer.Option(30.0, "--duration", "-d"),
     limit: int = typer.Option(50, "--limit", "-n"),
-    publish: list[Platform] = typer.Option([], "--publish", help="Platforms to post to"),
+    publish: list[Platform] = typer.Option([], "--publish", help="Post to every connected account on these platforms"),
+    account: list[int] = typer.Option([], "--account", help="Post to these account ids only"),
     bgm: Path = typer.Option(None, "--bgm"),
     live: bool = typer.Option(False, "--live", help="Actually publish (default is dry run)"),
     csv_path: Path = typer.Option(None, "--csv", help="Use a CSV instead of the search API"),
@@ -240,7 +241,7 @@ def create_all(
         result = Pipeline(session).run_all(
             proj, keyword, platform, publish_to=list(publish) or None,
             duration=duration, limit=limit, records=records,
-            bgm=bgm, dry_run=not live,
+            bgm=bgm, dry_run=not live, account_ids=list(account) or None,
         )
         console.print_json(json.dumps(result.summary(), ensure_ascii=False, default=str))
 
@@ -691,3 +692,121 @@ def db_revision(message: str = typer.Option(..., "--message", "-m")):
     from .db import _alembic_config
 
     command.revision(_alembic_config(), message=message, autogenerate=True)
+
+
+# ---------------- connected accounts ----------------
+
+account_app = typer.Typer(help="Connected SNS accounts.", no_args_is_help=True)
+app.add_typer(account_app, name="account")
+
+
+@account_app.command("list")
+def account_list():
+    """Show connected accounts and how long their tokens last."""
+    init_db()
+    from .models import SocialAccount
+    from .platforms.accounts import AccountService
+
+    with session_scope() as session:
+        service = AccountService(session)
+        table = Table(header_style="bold")
+        table.add_column("id", justify="right")
+        table.add_column("platform")
+        table.add_column("account")
+        table.add_column("expires")
+        table.add_column("24h posts", justify="right")
+        table.add_column("state")
+
+        accounts = session.query(SocialAccount).order_by(SocialAccount.id).all()
+        if not accounts:
+            console.print("[yellow]No connected accounts.[/yellow] "
+                          "Connect them from the web UI: /accounts")
+            return
+        for account in accounts:
+            remaining = account.seconds_until_expiry()
+            expires = (
+                "no expiry" if remaining is None
+                else ("expired" if remaining <= 0 else f"{remaining / 3600:.1f}h")
+            )
+            state = (
+                "[red]refresh failed[/red]" if account.refresh_error
+                else ("[dim]disconnected[/dim]" if not account.is_active
+                      else "[green]connected[/green]")
+            )
+            table.add_row(
+                str(account.id), account.platform.value,
+                account.display_name or account.external_id, expires,
+                str(service.posts_in_window(account.platform, account.id)), state,
+            )
+        console.print(table)
+
+
+@account_app.command("connect-url")
+def account_connect_url(platform: Platform):
+    """Print the authorization URL to open in a browser.
+
+    Useful when the web UI is not reachable yet; finish the flow by visiting
+    the URL and letting the callback land on this install.
+    """
+    from .platforms.oauth import OAuthError, get_provider
+
+    try:
+        start = get_provider(platform, get_settings()).start()
+    except OAuthError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(start.url)
+    console.print(f"[dim]state: {start.state}[/dim]")
+
+
+@account_app.command("refresh")
+def account_refresh(account_id: int = typer.Argument(None, help="Omit to refresh all due")):
+    """Refresh access tokens that are close to expiring."""
+    init_db()
+    from .models import SocialAccount
+    from .platforms.accounts import AccountService
+    from .platforms.oauth import OAuthError
+
+    with session_scope() as session:
+        service = AccountService(session)
+        if account_id:
+            account = session.get(SocialAccount, account_id)
+            if account is None:
+                raise typer.BadParameter(f"no account with id {account_id}")
+            try:
+                service.refresh(account)
+                console.print(f"[green]Refreshed[/green] until {account.expires_at}")
+            except OAuthError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            return
+        results = service.refresh_due()
+        console.print_json(json.dumps(results, default=str))
+
+
+@account_app.command("limits")
+def account_limits():
+    """Show how much of each platform's posting allowance is used."""
+    init_db()
+    from .platforms.accounts import AccountService
+
+    with session_scope() as session:
+        service = AccountService(session)
+        table = Table(header_style="bold")
+        table.add_column("platform")
+        table.add_column("used (24h)", justify="right")
+        table.add_column("cap", justify="right")
+        table.add_column("can post")
+        table.add_column("note")
+        for platform in Platform:
+            rate = service.check_rate(platform)
+            table.add_row(
+                platform.value, str(rate["used_24h"]),
+                str(rate["cap"] or "-"),
+                "[green]yes[/green]" if rate["allowed"] else "[red]no[/red]",
+                rate["reason"] or "",
+            )
+        console.print(table)
+        console.print(
+            "[dim]Instagram reports its own remaining quota; "
+            "`snsauto account limits --live` is not needed because the adapter "
+            "queries it at publish time.[/dim]"
+        )

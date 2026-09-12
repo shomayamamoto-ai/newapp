@@ -515,3 +515,115 @@ class TestPublicAssets:
         get_settings.cache_clear()
         dbmod._engine = None
         dbmod._Session = None
+
+
+# ---------------------------------------------------------------------------
+# Account connection flow
+# ---------------------------------------------------------------------------
+
+
+class TestAccountsPage:
+    def test_page_lists_every_platform(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        body = client.get("/accounts").text
+        assert "アカウント連携" in body
+        for platform in ("TIKTOK", "YOUTUBE", "INSTAGRAM", "X"):
+            assert platform in body
+
+    def test_explains_why_a_platform_cannot_be_connected(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        body = client.get("/accounts").text
+        assert "接続の準備ができていません" in body
+
+    def test_connecting_requires_admin(self, secure_env):
+        client_for, _ = secure_env
+        client, token = client_for("editor@x.com")
+        assert client.post("/connect/tiktok",
+                           data={"csrf_token": token}).status_code == 403
+
+    def test_connect_without_csrf_is_rejected(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        assert client.post("/connect/tiktok", data={}).status_code == 400
+
+    def test_unconfigured_connect_redirects_with_the_reason(self, secure_env):
+        client_for, _ = secure_env
+        client, token = client_for("admin@x.com")
+        response = client.post("/connect/tiktok", data={"csrf_token": token},
+                               follow_redirects=False)
+        assert response.status_code == 303
+        assert "error=" in response.headers["location"]
+
+
+class TestConnectCallback:
+    def test_a_callback_without_pending_state_is_refused(self, secure_env):
+        """A stray callback must not be able to attach an account."""
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        response = client.get("/connect/tiktok/callback?code=x&state=y",
+                              follow_redirects=False)
+        assert response.status_code == 303
+        assert "error=" in response.headers["location"]
+
+    def test_the_platform_error_is_surfaced(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        response = client.get(
+            "/connect/tiktok/callback?error=access_denied"
+            "&error_description=User+declined",
+            follow_redirects=False,
+        )
+        assert "User" in response.headers["location"]
+
+    def test_callback_requires_admin(self, secure_env):
+        client_for, _ = secure_env
+        client, _ = client_for("viewer@x.com")
+        assert client.get("/connect/tiktok/callback?code=x").status_code == 403
+
+
+class TestConnectedAccountManagement:
+    def _account(self, platform="tiktok"):
+        import snsauto.db as dbmod
+        from snsauto.models import Platform as P
+        from snsauto.models import SocialAccount
+
+        with dbmod.session_scope() as session:
+            account = SocialAccount(
+                platform=P(platform), external_id="oid", display_name="デモ",
+                access_token="tok", refresh_token="rt",
+            )
+            session.add(account)
+            session.flush()
+            return account.id
+
+    def test_connected_accounts_are_shown(self, secure_env):
+        self._account()
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        assert "デモ" in client.get("/accounts").text
+
+    def test_disconnect_removes_it_from_the_list(self, secure_env):
+        account_id = self._account()
+        client_for, _ = secure_env
+        client, token = client_for("admin@x.com")
+        assert client.post(f"/accounts/{account_id}/disconnect",
+                           data={"csrf_token": token},
+                           follow_redirects=False).status_code == 303
+        assert "デモ" not in client.get("/accounts").text
+
+    def test_editors_cannot_disconnect(self, secure_env):
+        account_id = self._account()
+        client_for, _ = secure_env
+        client, token = client_for("editor@x.com")
+        assert client.post(f"/accounts/{account_id}/disconnect",
+                           data={"csrf_token": token}).status_code == 403
+
+    def test_capability_matrix_reflects_the_connection(self, secure_env):
+        self._account()
+        client_for, _ = secure_env
+        client, _ = client_for("admin@x.com")
+        caps = client.get("/api/capabilities").json()
+        assert caps["tiktok"]["publish"] is True
+        assert caps["tiktok"]["source"] == "connected"

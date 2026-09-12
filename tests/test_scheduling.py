@@ -111,7 +111,8 @@ class TestPublishing:
         _schedule(factory, ids, Platform.TIKTOK, datetime.now(timezone.utc) - timedelta(minutes=1))
         outcomes = Worker(factory, settings, "w1").tick()["published"]
         assert outcomes[0]["status"] == "failed"
-        assert "credentials" in outcomes[0]["error"]
+        # The message points at the fix: connect the account in the UI.
+        assert "未連携" in outcomes[0]["error"]
 
     def test_two_workers_never_publish_the_same_row(self, env):
         """A duplicate public post cannot be quietly undone."""

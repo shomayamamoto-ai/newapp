@@ -57,15 +57,21 @@ def _parse_dt(value: str | None) -> datetime | None:
 class YouTubeAdapter(BaseAdapter):
     platform = Platform.YOUTUBE
 
-    def __init__(self, settings=None, client: httpx.Client | None = None):
+    def __init__(self, settings=None, client: httpx.Client | None = None,
+                 credentials=None):
         self.settings = settings or get_settings()
         self._client = client or httpx.Client(timeout=60.0)
+        self.credentials = credentials
 
     def capabilities(self) -> set[Capability]:
         caps: set[Capability] = set()
         if self.settings.youtube_api_key:
             caps |= {Capability.SEARCH, Capability.INSIGHTS}
-        if all(
+        # A connected account already holds a live access token, refreshed by
+        # the worker; the env path exchanges a refresh token per call.
+        if self.token():
+            caps |= {Capability.PUBLISH, Capability.INSIGHTS}
+        elif all(
             (
                 self.settings.youtube_client_id,
                 self.settings.youtube_client_secret,
@@ -229,6 +235,9 @@ class YouTubeAdapter(BaseAdapter):
     # ---------- plumbing ----------
 
     def _access_token(self) -> str:
+        connected = self.token()
+        if connected:
+            return connected
         resp = self._client.post(
             TOKEN_URL,
             data={

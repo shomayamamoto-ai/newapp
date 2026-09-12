@@ -112,7 +112,11 @@
   <tbody>
   {% for row in publications %}
     <tr>
-      <td>{{ row.publication.platform.value | upper }}</td>
+      <td>{{ row.publication.platform.value | upper }}
+        {% if row.publication.account %}
+        <div class="sub">{{ row.publication.account.display_name or row.publication.account.external_id }}</div>
+        {% endif %}
+      </td>
       <td><span class="pill {{ row.publication.status.value }}">{{ row.publication.status.value }}</span></td>
       <td class="num">{{ row.summary.views | int_ if row.summary.has_data else '-' }}</td>
       <td class="num">{{ row.summary.likes | int_ if row.summary.has_data else '-' }}</td>

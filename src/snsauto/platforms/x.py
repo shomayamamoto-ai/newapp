@@ -34,22 +34,27 @@ CHUNK = 4 * 1024 * 1024
 class XAdapter(BaseAdapter):
     platform = Platform.X
 
-    def __init__(self, settings=None, client: httpx.Client | None = None):
+    def __init__(self, settings=None, client: httpx.Client | None = None,
+                 credentials=None):
         self.settings = settings or get_settings()
         self._client = client or httpx.Client(timeout=60.0)
+        self.credentials = credentials
+
+    def _user_token(self) -> tuple[str | None, str | None]:
+        """The user's OAuth 1.0a token pair - connected account, else env."""
+        token = self.token() or self.settings.x_access_token
+        secret = (
+            getattr(self.credentials, "token_secret", None)
+            or self.settings.x_access_token_secret
+        )
+        return token, secret
 
     def capabilities(self) -> set[Capability]:
         caps: set[Capability] = set()
         if self.settings.x_bearer_token:
             caps |= {Capability.SEARCH, Capability.INSIGHTS}
-        if all(
-            (
-                self.settings.x_api_key,
-                self.settings.x_api_secret,
-                self.settings.x_access_token,
-                self.settings.x_access_token_secret,
-            )
-        ):
+        token, secret = self._user_token()
+        if all((self.settings.x_api_key, self.settings.x_api_secret, token, secret)):
             caps.add(Capability.PUBLISH)
         return caps
 
@@ -216,13 +221,14 @@ class XAdapter(BaseAdapter):
     # ---------- plumbing ----------
 
     def _oauth1(self, method: str, url: str, params: dict | None = None) -> str:
+        token, secret = self._user_token()
         return sign(
             method,
             url,
             consumer_key=self.settings.x_api_key or "",
             consumer_secret=self.settings.x_api_secret or "",
-            token=self.settings.x_access_token or "",
-            token_secret=self.settings.x_access_token_secret or "",
+            token=token or "",
+            token_secret=secret or "",
             params=params,
         )
 

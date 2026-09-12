@@ -41,13 +41,18 @@ CHUNK = 10 * 1024 * 1024
 class TikTokAdapter(BaseAdapter):
     platform = Platform.TIKTOK
 
-    def __init__(self, settings=None, client: httpx.Client | None = None):
+    def __init__(self, settings=None, client: httpx.Client | None = None,
+                 credentials=None):
         self.settings = settings or get_settings()
         self._client = client or httpx.Client(timeout=120.0)
+        self.credentials = credentials
+
+    def _token(self) -> str | None:
+        return self.token() or self.settings.tiktok_access_token
 
     def capabilities(self) -> set[Capability]:
         # SEARCH is deliberately never advertised - see the module docstring.
-        if self.settings.tiktok_access_token:
+        if self._token():
             return {Capability.PUBLISH, Capability.INSIGHTS}
         return set()
 
@@ -189,7 +194,7 @@ class TikTokAdapter(BaseAdapter):
             json=payload,
             params=params,
             headers={
-                "Authorization": f"Bearer {self.settings.tiktok_access_token}",
+                "Authorization": f"Bearer {self._token()}",
                 "Content-Type": "application/json; charset=UTF-8",
             },
         )

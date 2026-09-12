@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 4b78c66829c3
+Revision ID: 2fd06c8faaa9
 Revises: 
-Create Date: 2026-09-03 09:01:53.444885
+Create Date: 2026-09-12 03:55:59.935399
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = '4b78c66829c3'
+revision = '2fd06c8faaa9'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -31,8 +31,8 @@ def upgrade() -> None:
     sa.Column('meta', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('path')
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_clip_assets')),
+    sa.UniqueConstraint('path', name=op.f('uq_clip_assets_path'))
     )
     op.create_table('projects',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -41,8 +41,8 @@ def upgrade() -> None:
     sa.Column('brand_profile', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('name')
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_projects')),
+    sa.UniqueConstraint('name', name=op.f('uq_projects_name'))
     )
     op.create_table('users',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -54,8 +54,8 @@ def upgrade() -> None:
     sa.Column('last_login_at', sa.DateTime(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('email')
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_users')),
+    sa.UniqueConstraint('email', name=op.f('uq_users_email'))
     )
     op.create_table('alerts',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -73,8 +73,8 @@ def upgrade() -> None:
     sa.Column('context', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_alerts_project_id_projects')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_alerts'))
     )
     with op.batch_alter_table('alerts', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_alerts_fingerprint'), ['fingerprint'], unique=False)
@@ -94,8 +94,8 @@ def upgrade() -> None:
     sa.Column('claimed_at', sa.DateTime(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_jobs_project_id_projects')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_jobs'))
     )
     op.create_table('pdca_cycles',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -113,8 +113,8 @@ def upgrade() -> None:
     sa.Column('closed_at', sa.DateTime(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_pdca_cycles_project_id_projects')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_pdca_cycles'))
     )
     op.create_table('reports',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -126,8 +126,8 @@ def upgrade() -> None:
     sa.Column('context', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_reports_project_id_projects')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_reports'))
     )
     op.create_table('research_runs',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -139,12 +139,36 @@ def upgrade() -> None:
     sa.Column('notes', sa.Text(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_research_runs_project_id_projects')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_research_runs'))
     )
     with op.batch_alter_table('research_runs', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_research_runs_keyword'), ['keyword'], unique=False)
 
+    op.create_table('social_accounts',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('project_id', sa.Integer(), nullable=True),
+    sa.Column('platform', sa.Enum('TIKTOK', 'YOUTUBE', 'INSTAGRAM', 'X', name='platform'), nullable=False),
+    sa.Column('external_id', sa.String(length=200), nullable=False),
+    sa.Column('display_name', sa.String(length=200), nullable=True),
+    sa.Column('username', sa.String(length=200), nullable=True),
+    sa.Column('avatar_url', sa.String(length=600), nullable=True),
+    sa.Column('access_token', sa.Text(), nullable=False),
+    sa.Column('refresh_token', sa.Text(), nullable=True),
+    sa.Column('token_secret', sa.Text(), nullable=True),
+    sa.Column('scopes', sa.JSON(), nullable=False),
+    sa.Column('expires_at', sa.DateTime(), nullable=True),
+    sa.Column('refresh_expires_at', sa.DateTime(), nullable=True),
+    sa.Column('last_refreshed_at', sa.DateTime(), nullable=True),
+    sa.Column('refresh_error', sa.Text(), nullable=True),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('meta', sa.JSON(), nullable=False),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_social_accounts_project_id_projects')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_social_accounts')),
+    sa.UniqueConstraint('project_id', 'platform', 'external_id', name='uq_account')
+    )
     op.create_table('competitor_posts',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('run_id', sa.Integer(), nullable=False),
@@ -167,8 +191,8 @@ def upgrade() -> None:
     sa.Column('raw', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['run_id'], ['research_runs.id'], ),
-    sa.PrimaryKeyConstraint('id'),
+    sa.ForeignKeyConstraint(['run_id'], ['research_runs.id'], name=op.f('fk_competitor_posts_run_id_research_runs')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_competitor_posts')),
     sa.UniqueConstraint('run_id', 'external_id', name='uq_run_external')
     )
     op.create_table('scripts',
@@ -186,9 +210,9 @@ def upgrade() -> None:
     sa.Column('rationale', sa.Text(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.ForeignKeyConstraint(['run_id'], ['research_runs.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_scripts_project_id_projects')),
+    sa.ForeignKeyConstraint(['run_id'], ['research_runs.id'], name=op.f('fk_scripts_run_id_research_runs')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_scripts'))
     )
     op.create_table('experiments',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -203,10 +227,10 @@ def upgrade() -> None:
     sa.Column('closed_at', sa.DateTime(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['base_script_id'], ['scripts.id'], ),
-    sa.ForeignKeyConstraint(['cycle_id'], ['pdca_cycles.id'], ),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['base_script_id'], ['scripts.id'], name=op.f('fk_experiments_base_script_id_scripts')),
+    sa.ForeignKeyConstraint(['cycle_id'], ['pdca_cycles.id'], name=op.f('fk_experiments_cycle_id_pdca_cycles')),
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_experiments_project_id_projects')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_experiments'))
     )
     op.create_table('storyboards',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -215,8 +239,8 @@ def upgrade() -> None:
     sa.Column('style', sa.String(length=200), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['script_id'], ['scripts.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['script_id'], ['scripts.id'], name=op.f('fk_storyboards_script_id_scripts')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_storyboards'))
     )
     op.create_table('structure_analyses',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -229,9 +253,9 @@ def upgrade() -> None:
     sa.Column('takeaways', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['post_id'], ['competitor_posts.id'], ),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('post_id')
+    sa.ForeignKeyConstraint(['post_id'], ['competitor_posts.id'], name=op.f('fk_structure_analyses_post_id_competitor_posts')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_structure_analyses')),
+    sa.UniqueConstraint('post_id', name=op.f('uq_structure_analyses_post_id'))
     )
     op.create_table('renders',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -245,8 +269,8 @@ def upgrade() -> None:
     sa.Column('meta', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['storyboard_id'], ['storyboards.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['storyboard_id'], ['storyboards.id'], name=op.f('fk_renders_storyboard_id_storyboards')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_renders'))
     )
     op.create_table('shots',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -263,8 +287,8 @@ def upgrade() -> None:
     sa.Column('clip_path', sa.String(length=600), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['storyboard_id'], ['storyboards.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['storyboard_id'], ['storyboards.id'], name=op.f('fk_shots_storyboard_id_storyboards')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_shots'))
     )
     op.create_table('variants',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -276,9 +300,9 @@ def upgrade() -> None:
     sa.Column('result', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['experiment_id'], ['experiments.id'], ),
-    sa.ForeignKeyConstraint(['script_id'], ['scripts.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['experiment_id'], ['experiments.id'], name=op.f('fk_variants_experiment_id_experiments')),
+    sa.ForeignKeyConstraint(['script_id'], ['scripts.id'], name=op.f('fk_variants_script_id_scripts')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_variants'))
     )
     op.create_table('publications',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -286,6 +310,7 @@ def upgrade() -> None:
     sa.Column('render_id', sa.Integer(), nullable=True),
     sa.Column('script_id', sa.Integer(), nullable=True),
     sa.Column('platform', sa.Enum('TIKTOK', 'YOUTUBE', 'INSTAGRAM', 'X', name='platform'), nullable=False),
+    sa.Column('account_id', sa.Integer(), nullable=True),
     sa.Column('status', sa.Enum('DRAFT', 'SCHEDULED', 'PUBLISHED', 'FAILED', name='publicationstatus'), nullable=False),
     sa.Column('caption', sa.Text(), nullable=True),
     sa.Column('hashtags', sa.JSON(), nullable=False),
@@ -298,10 +323,11 @@ def upgrade() -> None:
     sa.Column('claimed_at', sa.DateTime(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], ),
-    sa.ForeignKeyConstraint(['render_id'], ['renders.id'], ),
-    sa.ForeignKeyConstraint(['script_id'], ['scripts.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['account_id'], ['social_accounts.id'], name=op.f('fk_publications_account_id_social_accounts')),
+    sa.ForeignKeyConstraint(['project_id'], ['projects.id'], name=op.f('fk_publications_project_id_projects')),
+    sa.ForeignKeyConstraint(['render_id'], ['renders.id'], name=op.f('fk_publications_render_id_renders')),
+    sa.ForeignKeyConstraint(['script_id'], ['scripts.id'], name=op.f('fk_publications_script_id_scripts')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_publications'))
     )
     op.create_table('metric_snapshots',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -314,17 +340,36 @@ def upgrade() -> None:
     sa.Column('saves', sa.Integer(), nullable=False),
     sa.Column('watch_time_sec', sa.Float(), nullable=False),
     sa.Column('raw', sa.JSON(), nullable=False),
-    sa.ForeignKeyConstraint(['publication_id'], ['publications.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['publication_id'], ['publications.id'], name=op.f('fk_metric_snapshots_publication_id_publications')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_metric_snapshots'))
     )
     with op.batch_alter_table('metric_snapshots', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_metric_snapshots_captured_at'), ['captured_at'], unique=False)
+
+    op.create_table('publish_attempts',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('account_id', sa.Integer(), nullable=True),
+    sa.Column('publication_id', sa.Integer(), nullable=True),
+    sa.Column('platform', sa.Enum('TIKTOK', 'YOUTUBE', 'INSTAGRAM', 'X', name='platform'), nullable=False),
+    sa.Column('attempted_at', sa.DateTime(), nullable=False),
+    sa.Column('succeeded', sa.Boolean(), nullable=False),
+    sa.Column('error', sa.Text(), nullable=True),
+    sa.ForeignKeyConstraint(['account_id'], ['social_accounts.id'], name=op.f('fk_publish_attempts_account_id_social_accounts')),
+    sa.ForeignKeyConstraint(['publication_id'], ['publications.id'], name=op.f('fk_publish_attempts_publication_id_publications')),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_publish_attempts'))
+    )
+    with op.batch_alter_table('publish_attempts', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_publish_attempts_attempted_at'), ['attempted_at'], unique=False)
 
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
+    with op.batch_alter_table('publish_attempts', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_publish_attempts_attempted_at'))
+
+    op.drop_table('publish_attempts')
     with op.batch_alter_table('metric_snapshots', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_metric_snapshots_captured_at'))
 
@@ -338,6 +383,7 @@ def downgrade() -> None:
     op.drop_table('experiments')
     op.drop_table('scripts')
     op.drop_table('competitor_posts')
+    op.drop_table('social_accounts')
     with op.batch_alter_table('research_runs', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_research_runs_keyword'))
 
