@@ -70,4 +70,33 @@
   </div>
   {% endfor %}
 </div>
+
+<h2>どの指標が取れるか</h2>
+<p class="sub" style="margin-bottom:8px">
+  <b>自社</b>＝自分が投稿したもの、<b>競合</b>＝他人の投稿。
+  視聴維持率と保存数がほぼ「競合✗」なのは実装の不足ではなく、
+  各プラットフォームのInsights APIが自社アカウントの投稿にしか開放されていないためです。
+</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>指標</th>
+    {% for platform in metric_matrix %}<th colspan="2">{{ platform | upper }}</th>{% endfor %}</tr>
+    <tr><th></th>
+    {% for platform in metric_matrix %}<th class="sub">自社</th><th class="sub">競合</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for metric in ['views','likes','comments','shares','saves','retention_rate','avg_watch_sec'] %}
+    <tr>
+      <td>{{ metric_labels.get(metric, metric) }}</td>
+      {% for platform, rows in metric_matrix.items() %}
+        {% set row = rows.get(metric) %}
+        <td>{% if row and row.own %}<span class="pill ok">✓</span>{% else %}<span class="pill mute">✗</span>{% endif %}</td>
+        <td>{% if row and row.rival %}<span class="pill ok">✓</span>{% else %}<span class="pill mute">✗</span>{% endif %}</td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="sub">YouTube の視聴維持率には <code>yt-analytics.readonly</code> スコープが必要です。
+このスコープが追加される前に連携したアカウントは、再連携するまで維持率が取得されません。</p>
 {% endblock %}

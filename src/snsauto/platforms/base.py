@@ -152,13 +152,115 @@ class CommentRecord:
 
 @dataclass(slots=True)
 class MetricRecord:
+    """One reading of a post's performance.
+
+    The retention fields are the ones that actually decide whether a
+    short-form video worked, and they are reachable for *your own* posts on
+    the platforms that expose an analytics surface - which is not the same
+    surface the public counts come from. YouTube needs a second API entirely
+    (youtubeanalytics.googleapis.com, `yt-analytics.readonly`); Instagram needs
+    the insights edge. None of it is reachable for a competitor's post, on any
+    platform, which is a rule about the APIs rather than a gap in this code.
+    """
+
     views: int = 0
     likes: int = 0
     comments: int = 0
     shares: int = 0
     saves: int = 0
     watch_time_sec: float = 0.0
+
+    # Retention. `retention_rate` is the fraction of the video an average
+    # viewer watched (0-1); None means the platform did not report it, which
+    # must never be rendered as 0%.
+    avg_watch_sec: float | None = None
+    retention_rate: float | None = None
+    skip_rate: float | None = None
+    reach: int | None = None
+    impressions: int | None = None
+    click_through_rate: float | None = None
+
     raw: dict = field(default_factory=dict)
+
+    def has_retention(self) -> bool:
+        return self.retention_rate is not None or self.avg_watch_sec is not None
+
+
+# Which metrics each platform will report, and for whom. Written down here
+# rather than discovered per-call, because "we cannot get a competitor's saves"
+# is a fact about the APIs that the UI has to be able to state.
+#
+# own:  reachable for a post you published, with the right grant.
+# rival: reachable for someone else's post. Almost nothing is.
+METRIC_AVAILABILITY: dict[str, dict[str, dict[str, bool]]] = {
+    "youtube": {
+        "views":          {"own": True,  "rival": True},
+        "likes":          {"own": True,  "rival": True},
+        "comments":       {"own": True,  "rival": True},
+        "shares":         {"own": False, "rival": False},
+        "saves":          {"own": False, "rival": False},
+        # Analytics API, yt-analytics.readonly, owner only.
+        "retention_rate": {"own": True,  "rival": False},
+        "avg_watch_sec":  {"own": True,  "rival": False},
+    },
+    "instagram": {
+        "views":          {"own": True,  "rival": False},
+        "likes":          {"own": True,  "rival": True},
+        "comments":       {"own": True,  "rival": True},
+        "shares":         {"own": True,  "rival": False},
+        "saves":          {"own": True,  "rival": False},
+        "retention_rate": {"own": True,  "rival": False},
+        "avg_watch_sec":  {"own": True,  "rival": False},
+    },
+    "x": {
+        "views":          {"own": True,  "rival": True},
+        "likes":          {"own": True,  "rival": True},
+        "comments":       {"own": True,  "rival": True},
+        "shares":         {"own": True,  "rival": True},
+        # X is the one platform that exposes a save count publicly.
+        "saves":          {"own": True,  "rival": True},
+        "retention_rate": {"own": False, "rival": False},
+        "avg_watch_sec":  {"own": False, "rival": False},
+    },
+    "tiktok": {
+        "views":          {"own": True,  "rival": False},
+        "likes":          {"own": True,  "rival": False},
+        "comments":       {"own": True,  "rival": False},
+        "shares":         {"own": True,  "rival": False},
+        "saves":          {"own": False, "rival": False},
+        # The Display API carries no watch-time field. Retention exists only
+        # in the Research API, which is granted to approved institutions.
+        "retention_rate": {"own": False, "rival": False},
+        "avg_watch_sec":  {"own": False, "rival": False},
+    },
+}
+
+METRIC_UNAVAILABLE_JA = {
+    "retention_rate": "視聴維持率は自社投稿のみ（各社のInsights APIは自分の投稿にしか開放されていません）",
+    "avg_watch_sec": "平均視聴時間は自社投稿のみ",
+    "saves": "保存数は自社投稿のみ（Xのみブックマーク数が公開されています）",
+    "shares": "シェア数はこのAPIでは提供されていません",
+}
+
+
+def metric_available(platform: str, metric: str, own: bool = True) -> bool:
+    row = METRIC_AVAILABILITY.get(platform, {}).get(metric)
+    return bool(row and row["own" if own else "rival"])
+
+
+def unavailable_reason(platform: str, metric: str, own: bool = True) -> str | None:
+    """Why a metric is missing, in a sentence the UI can print."""
+    if metric_available(platform, metric, own):
+        return None
+    if not own:
+        return (
+            f"{metric} は競合投稿については取得できません。"
+            "各プラットフォームのInsights APIは自社アカウントの投稿にのみ"
+            "開放されているためで、回避策はありません。"
+        )
+    return METRIC_UNAVAILABLE_JA.get(
+        metric, f"{platform} の公式APIでは {metric} を取得できません。"
+    )
 
 
 @runtime_checkable

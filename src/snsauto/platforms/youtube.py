@@ -7,9 +7,10 @@ gated separately.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -28,9 +29,14 @@ from .base import (
     SearchOptions,
 )
 
+log = logging.getLogger(__name__)
+
 API = "https://www.googleapis.com/youtube/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/youtube/v3/videos"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+# Retention lives on a different API from the public counts, with its own
+# scope. videos.list will never return it however many parts you ask for.
+ANALYTICS_API = "https://youtubeanalytics.googleapis.com/v2/reports"
 
 _ISO_DUR = re.compile(
     r"P(?:(?P<d>\d+)D)?T(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+)S)?"
@@ -342,12 +348,86 @@ class YouTubeAdapter(BaseAdapter):
         if not items:
             raise PlatformError(f"YouTube video not found: {external_id}")
         stats = items[0].get("statistics", {})
-        return MetricRecord(
+        record = MetricRecord(
             views=int(stats.get("viewCount", 0) or 0),
             likes=int(stats.get("likeCount", 0) or 0),
             comments=int(stats.get("commentCount", 0) or 0),
-            raw=stats,
+            raw={"statistics": stats},
         )
+
+        # Retention is a separate API and a separate grant. Failing to get it
+        # must not lose the public counts we already have, so this is additive
+        # and never raises.
+        retention = self.fetch_retention(external_id)
+        if retention:
+            record.avg_watch_sec = retention.get("avg_watch_sec")
+            record.retention_rate = retention.get("retention_rate")
+            record.impressions = retention.get("impressions")
+            record.click_through_rate = retention.get("click_through_rate")
+            record.watch_time_sec = retention.get("watch_time_sec") or 0.0
+            record.raw["analytics"] = retention
+        return record
+
+    def fetch_retention(self, external_id: str) -> dict | None:
+        """Average view duration and percentage, from the Analytics API.
+
+        Only works for a video on the authenticated channel: YouTube exposes
+        retention to the owner and to nobody else, so there is no competitor
+        equivalent of this call to write.
+
+        Returns None - not zeros - when the grant is missing or the video is
+        not ours. A retention of "0%" and "not measured" are different facts
+        and a PDCA baseline that averages them together is wrong.
+        """
+        token = self.token()
+        if not token:
+            return None
+        try:
+            resp = self._client.get(
+                ANALYTICS_API,
+                params={
+                    "ids": "channel==MINE",
+                    # Wide enough to cover the video's whole life; the API
+                    # rejects a request with no date range.
+                    "startDate": "2005-02-14",   # YouTube's own launch date
+                    "endDate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "metrics": ",".join([
+                        "views", "estimatedMinutesWatched",
+                        "averageViewDuration", "averageViewPercentage",
+                    ]),
+                    "filters": f"video=={external_id}",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            log.info("YouTube Analytics unreachable for %s: %s", external_id, exc)
+            return None
+
+        if resp.status_code == 403:
+            log.info(
+                "YouTube Analytics denied for %s - the connected account is "
+                "missing the yt-analytics.readonly scope. Reconnect it at "
+                "/accounts to collect retention.", external_id,
+            )
+            return None
+        if resp.status_code >= 400:
+            log.info("YouTube Analytics %s for %s", resp.status_code, external_id)
+            return None
+
+        rows = (resp.json() or {}).get("rows") or []
+        if not rows:
+            return None
+        views, minutes, avg_duration, avg_percent = (list(rows[0]) + [0] * 4)[:4]
+        return {
+            "views": int(views or 0),
+            "watch_time_sec": float(minutes or 0) * 60.0,
+            "avg_watch_sec": float(avg_duration or 0) or None,
+            # The API reports a percentage; store the fraction so it never
+            # gets rendered as 4500%.
+            "retention_rate": (float(avg_percent) / 100.0) if avg_percent else None,
+            "impressions": None,
+            "click_through_rate": None,
+        }
 
     # ---------- plumbing ----------
 

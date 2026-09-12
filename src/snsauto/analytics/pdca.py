@@ -48,6 +48,10 @@ MIN_SAMPLE = 3
 METRIC_FIELDS = (
     "views", "likes", "comments", "shares", "saves",
     "engagement_rate", "views_per_hour",
+    # Retention is the metric that decides a short-form video, and it is only
+    # present for posts whose platform reported it. A post without it
+    # contributes nothing to these aggregates rather than contributing a zero.
+    "retention_rate", "avg_watch_sec", "skip_rate",
 )
 
 # Metrics whose value keeps climbing with age. For these the age-matched
@@ -59,12 +63,19 @@ METRIC_JA = {
     "views": "再生数", "likes": "いいね", "comments": "コメント数",
     "shares": "シェア", "saves": "保存", "engagement_rate": "エンゲージ率",
     "views_per_hour": "時間あたり再生数",
+    "retention_rate": "視聴維持率", "avg_watch_sec": "平均視聴時間",
+    "skip_rate": "スキップ率",
 }
+
+# Metrics where a smaller number is the better outcome.
+LOWER_IS_BETTER = {"skip_rate"}
 
 
 def _metric_value(row: dict, metric: str, age_matched: bool) -> float | None:
     """One post's value for a metric, age-matched where that is meaningful."""
-    if age_matched and metric in CUMULATIVE_METRICS | {"engagement_rate"}:
+    if age_matched and metric in CUMULATIVE_METRICS | {
+        "engagement_rate", "retention_rate", "avg_watch_sec"
+    }:
         at_age = row.get("at_24h")
         if at_age and metric in at_age:
             return at_age[metric]
@@ -312,7 +323,10 @@ def evaluate_target(target: dict, result: dict, baseline: dict) -> dict:
         out["verdict"] = "inconclusive"
         out["reason"] = sentence
     else:
-        out["verdict"] = "success" if significance["direction"] == "up" else "failure"
+        improved = significance["direction"] == (
+            "down" if metric in LOWER_IS_BETTER else "up"
+        )
+        out["verdict"] = "success" if improved else "failure"
         out["reason"] = sentence
     return out
 

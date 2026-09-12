@@ -93,6 +93,47 @@ def serve(
 
 
 @app.command()
+def verify(
+    platform: Platform = typer.Option(None, "--platform", "-p", help="1つだけ検証"),
+    project: str = typer.Option(None, "--project"),
+    keyword: str = typer.Option("news", "--keyword", help="検索の確認に使う語"),
+):
+    """各プラットフォームへの実接続を読み取り専用で確認する。投稿はしません。"""
+    init_db()
+    from .platforms.verify import ConnectionVerifier
+
+    with session_scope() as session:
+        project_id = _get_project(session, project).id if project else None
+        verifier = ConnectionVerifier(session, get_settings())
+        reports = (
+            [verifier.verify(platform, project_id, keyword=keyword)] if platform
+            else verifier.verify_all(project_id, keyword=keyword)
+        )
+
+        marks = {"ok": "[green]OK[/green]", "fail": "[red]NG[/red]",
+                 "skip": "[dim]--[/dim]"}
+        problems = 0
+        for report in reports:
+            table = Table(title=report.platform.upper(), header_style="bold",
+                          title_justify="left")
+            table.add_column("項目", width=12)
+            table.add_column("", width=4)
+            table.add_column("結果", max_width=60)
+            for check in report.checks:
+                table.add_row(check.name, marks[check.status], check.detail)
+                if check.fix:
+                    table.add_row("", "", f"[yellow]→ {check.fix}[/yellow]")
+            console.print(table)
+            problems += len(report.failed)
+
+        if problems:
+            console.print(f"\n[red]{problems}件の問題[/red]があります。"
+                          "上の → の指示を確認してください。")
+            raise typer.Exit(1)
+        console.print("\n[green]接続に問題は見つかりませんでした。[/green]")
+
+
+@app.command()
 def doctor():
     """Show what this installation can actually do right now."""
     from .llm import build_client
@@ -325,6 +366,35 @@ def research_import(
         )
         console.print(f"[green]Imported[/green] {len(run.posts)} posts (run id={run.id})")
         _print_top(run)
+
+
+@research_app.command("audio")
+def research_audio(
+    run_id: int,
+    top_n: int = typer.Option(12, "--top"),
+):
+    """取得済みの動画から、同じ音源を使っている投稿を探す。"""
+    init_db()
+    with session_scope() as session:
+        run = session.get(ResearchRun, run_id)
+        if not run:
+            raise typer.BadParameter(f"run {run_id} not found")
+        result = Pipeline(session).analyze_shared_audio(run, top_n=top_n)
+        if not result.get("usable"):
+            console.print(f"[yellow]{result.get('reason')}[/yellow]")
+            raise typer.Exit(0)
+
+        console.print(f"{result['analysed']}本を解析（対象 {result['considered']}本）")
+        if result.get("failed"):
+            console.print(f"[dim]解析できず: {len(result['failed'])}本[/dim]")
+        groups = result["shared_groups"]
+        if not groups:
+            console.print("同じ音源を使っている組み合わせは見つかりませんでした。")
+            raise typer.Exit(0)
+        for i, group in enumerate(groups, 1):
+            console.print(f"  [bold]グループ{i}[/bold]（{len(group)}本）: "
+                          + ", ".join(group))
+        console.print(f"[dim]{result['note']}[/dim]")
 
 
 @research_app.command("comments")

@@ -37,6 +37,11 @@ GOOGLE_TOKEN = "https://oauth2.googleapis.com/token"
 YOUTUBE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    # Retention (averageViewPercentage / averageViewDuration) comes from the
+    # Analytics API, which the two scopes above do not reach. An account
+    # connected before this scope existed keeps working and simply reports no
+    # retention until it is reconnected.
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
 # --- TikTok ---

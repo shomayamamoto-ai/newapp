@@ -48,11 +48,12 @@ from ..models import (
 from . import auth as authlib
 from ..notify import AlertService
 from ..platforms import PostRecord, capability_matrix
+from ..platforms.base import METRIC_AVAILABILITY
 from ..platforms.accounts import AccountService
 from ..platforms.oauth import OAuthError, get_provider, oauth_readiness
 from ..storage import build_storage, storage_status
 from ..reporting.templates import _fmt_dt, _fmt_dur, _fmt_int, _fmt_pct
-from ..analytics.pdca import posts_needed
+from ..analytics.pdca import METRIC_JA, posts_needed
 from ..analytics.stats import RELIABILITY_JA
 from ..research.audio import AUDIO_STYLE_JA
 from ..research.comments import summarize_comments
@@ -314,6 +315,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render(
             "capabilities.html.j2", session, request, user, nav="capabilities", page_title="接続状況",
             matrix=capability_matrix(settings, session), requirements=REQUIREMENTS,
+            metric_matrix=METRIC_AVAILABILITY, metric_labels=METRIC_JA,
             environment=_environment_report(settings),
             storage=storage_status(settings),
             mail_configured=bool(settings.smtp_host and settings.alert_email_to),

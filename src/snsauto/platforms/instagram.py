@@ -276,7 +276,13 @@ class InstagramAdapter(BaseAdapter):
         try:
             ins = self._get(
                 f"{API}/{external_id}/insights",
-                {"metric": "views,reach,saved,shares,ig_reels_video_view_total_time"},
+                {"metric": ",".join([
+                    "views", "reach", "saved", "shares",
+                    "ig_reels_video_view_total_time",
+                    # Retention. Average watch time is the one that decides
+                    # whether a reel worked; skip rate is its mirror image.
+                    "ig_reels_avg_watch_time", "reels_skip_rate",
+                ])},
             )
         except PlatformError:
             return record  # Insights need a recent post and extra permissions.
@@ -286,14 +292,36 @@ class InstagramAdapter(BaseAdapter):
             for row in ins.get("data", [])
         }
         record.views = int(values.get("views") or values.get("reach") or 0)
+        record.reach = int(values.get("reach") or 0) or None
         record.saves = int(values.get("saved") or 0)
         record.shares = int(values.get("shares") or 0)
-        # Graph reports total watch time in milliseconds.
+        # Graph reports both watch-time metrics in milliseconds.
         record.watch_time_sec = (
             float(values.get("ig_reels_video_view_total_time") or 0) / 1000.0
         )
+        avg_ms = values.get("ig_reels_avg_watch_time")
+        record.avg_watch_sec = (float(avg_ms) / 1000.0) if avg_ms else None
+        skip = values.get("reels_skip_rate")
+        # Reported as a percentage; stored as a fraction so it is never
+        # rendered as 3400%.
+        record.skip_rate = (float(skip) / 100.0) if skip else None
         record.raw["insights"] = values
         return record
+
+    def retention_for(self, external_id: str, duration_sec: float | None) -> float | None:
+        """Average watch time as a fraction of the reel's length.
+
+        Instagram reports the seconds but never the ratio, and the ratio is
+        what compares across reels of different lengths. Needs the duration
+        from our own publication record, because the insights edge does not
+        carry it either.
+        """
+        if not duration_sec:
+            return None
+        record = self.fetch_metrics(external_id)
+        if record.avg_watch_sec is None:
+            return None
+        return min(1.0, record.avg_watch_sec / duration_sec)
 
     # ---------- plumbing ----------
 

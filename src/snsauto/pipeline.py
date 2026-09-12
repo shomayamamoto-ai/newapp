@@ -140,6 +140,35 @@ class Pipeline:
                 log.warning("structure analysis failed for post %s: %s", post.id, exc)
         return analysed
 
+    def analyze_shared_audio(self, run: ResearchRun, top_n: int = 12) -> dict:
+        """Which of this run's top posts use the same audio.
+
+        Uses videos already fetched for telop analysis - nothing extra is
+        downloaded. Posts whose video could not be obtained are simply absent
+        from the comparison, and the count of what was analysed is reported so
+        "no shared audio" is never confused with "nothing was checked".
+        """
+        from .research.fingerprint import recurring_sounds
+
+        fetcher = self.structure.fetcher()
+        if fetcher is None:
+            return {"usable": False, "reason": "動画取得が設定されていません。"}
+
+        videos = {}
+        for post in sorted(run.posts, key=lambda p: p.rank)[:top_n]:
+            path = fetcher.cached_path(post)
+            if path.exists() and path.stat().st_size > 0:
+                videos[post.external_id] = path
+
+        result = recurring_sounds(videos)
+        result["considered"] = min(top_n, len(run.posts))
+        if not videos:
+            result["reason"] = (
+                "取得済みの動画がありません。先に構成分析を実行して動画を"
+                "取得してください。"
+            )
+        return result
+
     def mine_comments(self, run: ResearchRun, top_n: int = 10) -> int:
         """Pull the comment text on the top posts. Never fatal."""
         try:

@@ -53,11 +53,27 @@ class MetricsCollector:
             log.warning("metrics fetch failed for publication %s: %s", publication.id, exc)
             return None
 
+        # Instagram and TikTok report average watch time in seconds but never
+        # as a fraction of the video, and the fraction is the only form that
+        # compares a 15-second reel to a 60-second one. We hold the duration
+        # ourselves, on the render the post was made from.
+        if record.retention_rate is None and record.avg_watch_sec:
+            duration = getattr(publication.render, "duration_sec", None)
+            if duration:
+                record.retention_rate = min(1.0, record.avg_watch_sec / duration)
+
         snapshot = MetricSnapshot(
             publication_id=publication.id,
             views=record.views, likes=record.likes, comments=record.comments,
             shares=record.shares, saves=record.saves,
-            watch_time_sec=record.watch_time_sec, raw=record.raw,
+            watch_time_sec=record.watch_time_sec,
+            avg_watch_sec=record.avg_watch_sec,
+            retention_rate=record.retention_rate,
+            skip_rate=record.skip_rate,
+            reach=record.reach,
+            impressions=record.impressions,
+            click_through_rate=record.click_through_rate,
+            raw=record.raw,
         )
         self.session.add(snapshot)
         self.session.flush()
@@ -148,6 +164,8 @@ def metrics_at_age(publication: Publication, hours: float = MATURITY_HOURS) -> d
         "engagement_rate": (
             round(interactions / snapshot.views, 5) if snapshot.views else 0.0
         ),
+        "retention_rate": snapshot.retention_rate,
+        "avg_watch_sec": snapshot.avg_watch_sec,
     }
 
 
@@ -183,6 +201,13 @@ def summarize_publication(publication: Publication) -> dict:
         "saves": latest.saves,
         "engagement_rate": round(interactions / latest.views, 5) if latest.views else 0.0,
         "views_per_hour": round(latest.views / age_h, 2),
+        # Retention stays None when unmeasured. Zero would mean "nobody
+        # watched", which is a different claim and would poison any average.
+        "retention_rate": latest.retention_rate,
+        "avg_watch_sec": latest.avg_watch_sec,
+        "skip_rate": latest.skip_rate,
+        "reach": latest.reach,
+        "has_retention": latest.retention_rate is not None,
         "age_hours": round(age_h, 1),
         "first_24h": growth_between(snapshots, 24.0),
         # Age-matched numbers, so two posts of different ages can be compared.

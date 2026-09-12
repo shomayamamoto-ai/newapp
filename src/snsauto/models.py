@@ -395,6 +395,17 @@ class MetricSnapshot(Base):
     shares: Mapped[int] = mapped_column(Integer, default=0)
     saves: Mapped[int] = mapped_column(Integer, default=0)
     watch_time_sec: Mapped[float] = mapped_column(Float, default=0.0)
+
+    # Retention, where the platform reports it. Nullable on purpose: a missing
+    # retention figure is not a retention of zero, and storing 0.0 for it would
+    # drag every average that touches it.
+    avg_watch_sec: Mapped[float | None] = mapped_column(Float)
+    retention_rate: Mapped[float | None] = mapped_column(Float)
+    skip_rate: Mapped[float | None] = mapped_column(Float)
+    reach: Mapped[int | None] = mapped_column(Integer)
+    impressions: Mapped[int | None] = mapped_column(Integer)
+    click_through_rate: Mapped[float | None] = mapped_column(Float)
+
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 
     publication: Mapped[Publication] = relationship(back_populates="snapshots")
