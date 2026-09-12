@@ -1,25 +1,40 @@
 """Composition and telop analysis of competing posts.
 
-Two tiers, both usable:
+Three tiers, each usable on its own:
 
-* **Heuristic** (no credentials, no network): hook classification, CTA
-  detection, hashtag extraction, and - when the video file is local - real cut
-  detection via ffmpeg, giving cut count, average shot length and pacing.
-* **LLM-assisted** (needs ANTHROPIC_API_KEY): beat-by-beat breakdown and
-  transferable takeaways.
+* **Text** (no credentials, no network): hook classification, CTA detection
+  and hashtag extraction from the title and caption.
+* **Frames** (needs the video file): the telop actually burned into the
+  picture, read by OCR, plus cut detection and an audio-bed measurement. This
+  is the tier that makes "テロップ分析" mean what it says - see ``telop.py``.
+* **LLM** (needs ANTHROPIC_API_KEY): beat-by-beat breakdown, transferable
+  takeaways, and optional vision reads that add telop styling OCR cannot see.
 
-The heuristic tier is what runs by default, so analysis never silently
-degrades to nothing when an API key is absent.
+Each tier degrades independently and records that it did. A run with no video
+still produces text analysis; it just reports ``onscreen.reader == "none"``
+rather than passing caption statistics off as telop.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import statistics
 from pathlib import Path
 
 from ..models import CompetitorPost, StructureAnalysis
 from ..media.ffmpeg import FFmpegError, detect_scenes, probe
+from .audio import analyze_audio
+from .fetch import FetchedVideo, VideoFetcher, provenance_note
+from .telop import (
+    TesseractReader,
+    VisionReader,
+    analyze_telop,
+    confidence_band,
+    merge_into_profile,
+)
+
+log = logging.getLogger(__name__)
 
 HASHTAG_RE = re.compile(r"#([\w぀-ヿ一-鿿]+)")
 
@@ -140,9 +155,91 @@ def telop_profile(text: str | None, duration: float | None) -> dict:
 class StructureService:
     """Analyses a stored CompetitorPost and persists the breakdown."""
 
-    def __init__(self, session, llm=None):
+    def __init__(self, session, llm=None, settings=None, fetcher=None):
         self.session = session
         self.llm = llm
+        self.settings = settings
+        self._fetcher = fetcher
+
+    # ---------- video acquisition ----------
+
+    def fetcher(self) -> VideoFetcher | None:
+        if self._fetcher is None and self.settings is not None:
+            self._fetcher = VideoFetcher(self.settings)
+        return self._fetcher
+
+    def _resolve_video(
+        self, post: CompetitorPost, video_path
+    ) -> FetchedVideo | None:
+        if video_path and Path(video_path).exists():
+            path = Path(video_path)
+            return FetchedVideo(path, "local", bytes=path.stat().st_size)
+        fetcher = self.fetcher()
+        if fetcher is None:
+            return None
+        try:
+            return fetcher.fetch(post)
+        except Exception as exc:
+            # Never let acquisition failure take down the run: the text tier
+            # still has something to say about this post.
+            log.warning("video fetch failed for %s: %s", post.external_id, exc)
+            return None
+
+    def _readers(self):
+        """Which telop readers to use, honouring configuration."""
+        mode = getattr(self.settings, "telop_reader", "auto") if self.settings else "auto"
+        if mode == "off":
+            return None, None
+        vision = None
+        if mode in ("auto", "vision") and self.llm is not None and hasattr(
+            self.llm, "read_telop_frame"
+        ):
+            vision = VisionReader(self.llm)
+
+        ocr = None
+        if mode in ("auto", "tesseract") and TesseractReader.available():
+            ocr = TesseractReader()
+        elif mode == "vision" and vision is not None:
+            # Vision-only: it does the bulk pass itself. Costs one model call
+            # per distinct frame, so it is opt-in rather than the default.
+            ocr, vision = vision, None
+
+        return ocr, vision
+
+    # ---------- frame tier ----------
+
+    def analyze_frames(self, video: FetchedVideo) -> dict:
+        """Everything measurable from the file itself."""
+        settings = self.settings
+        ocr, vision = self._readers()
+        result: dict = {"provenance": video.source,
+                        "provenance_note": provenance_note(video.source)}
+
+        try:
+            result["telop"] = analyze_telop(
+                video.path,
+                reader=ocr,
+                interval=getattr(settings, "telop_interval_sec", 0.8),
+                max_frames=getattr(settings, "telop_max_frames", 45),
+                vision_reader=vision,
+                vision_budget=getattr(settings, "telop_vision_budget", 6),
+            )
+        except (FFmpegError, OSError) as exc:
+            result["telop_error"] = str(exc)
+
+        try:
+            result["pacing"] = analyze_pacing(video.path)
+        except FFmpegError as exc:
+            result["pacing_error"] = str(exc)
+
+        try:
+            result["audio"] = analyze_audio(video.path)
+        except (FFmpegError, OSError) as exc:
+            result["audio_error"] = str(exc)
+
+        return result
+
+    # ---------- orchestration ----------
 
     def analyze(
         self, post: CompetitorPost, video_path: str | Path | None = None
@@ -152,32 +249,55 @@ class StructureService:
         cta = detect_cta(text)
         duration = post.duration_sec or 30.0
 
+        # The caption profile stays, but it is no longer called the telop.
         telop = telop_profile(text, post.duration_sec)
         telop["hashtags"] = extract_hashtags(text)
 
         beats = estimate_beats(duration, hook_text, cta)
         takeaways: list = []
 
-        if video_path and Path(video_path).exists():
-            try:
-                pacing = analyze_pacing(video_path)
-                telop["pacing"] = pacing
-                takeaways.append(
-                    f"Cuts every {pacing['avg_shot_sec']}s on average "
-                    f"({pacing['cut_count']} cuts in {pacing['duration_sec']}s)."
-                )
-            except FFmpegError as exc:
-                telop["pacing_error"] = str(exc)
+        video = self._resolve_video(post, video_path)
+        if video is not None:
+            frames = self.analyze_frames(video)
+            telop = merge_into_profile(telop, frames.get("telop", {}))
+            telop["provenance"] = frames["provenance"]
+            telop["provenance_note"] = frames["provenance_note"]
+            for key in ("pacing", "pacing_error", "audio", "audio_error",
+                        "telop_error"):
+                if key in frames:
+                    telop[key] = frames[key]
+            takeaways.extend(_frame_takeaways(frames, duration))
+            # A real beat map beats an estimated one.
+            measured = _beats_from_telop(frames.get("telop", {}), duration)
+            if measured:
+                beats = measured
+        else:
+            telop = merge_into_profile(telop, {"reader": "none", "source": "none"})
+            telop["onscreen_note"] = (
+                "動画ファイルが無いため画面内テロップは未測定です。"
+                "以下はキャプションの統計です。"
+            )
 
         if self.llm is not None:
             enriched = self.llm.analyze_structure(
                 title=post.title, caption=post.caption, duration=duration
             )
             if enriched:
-                beats = enriched.get("beats") or beats
+                # Measured beats outrank inferred ones.
+                if not _beats_are_measured(beats):
+                    beats = enriched.get("beats") or beats
                 takeaways.extend(enriched.get("takeaways") or [])
                 hook_type = enriched.get("hook_type") or hook_type
                 cta = enriched.get("cta") or cta
+
+        # An on-screen hook is the real hook: it is what a scrolling viewer
+        # reads, and it usually differs from the caption's first line.
+        onscreen = telop.get("onscreen") or {}
+        events = onscreen.get("events") or []
+        if events and confidence_band(onscreen) in ("high", "medium"):
+            first = events[0]["text"].replace("\n", "")
+            hook_text = first
+            hook_type, _ = classify_hook(first)
 
         # Assign through the relationship, not post_id. Setting the FK alone
         # leaves the already-loaded post.structure cached as None for the rest
@@ -194,3 +314,86 @@ class StructureService:
         self.session.add(analysis)
         self.session.flush()
         return analysis
+
+
+def _beats_are_measured(beats: list) -> bool:
+    return bool(beats) and any(b.get("measured") for b in beats)
+
+
+def _beats_from_telop(summary: dict, duration: float) -> list[dict]:
+    """Turn real telop events into a beat map, labelled as measured.
+
+    Only when the read is trustworthy - a low-confidence OCR pass would
+    otherwise replace a sensible estimate with noise.
+    """
+    events = summary.get("events") or []
+    if not events or confidence_band(summary) not in ("high", "medium"):
+        return []
+
+    beats = []
+    for i, event in enumerate(events):
+        if i == 0:
+            label = "hook"
+        elif i == len(events) - 1:
+            label = "cta"
+        else:
+            label = "body"
+        beats.append({
+            "label": label,
+            "start": event["start"],
+            "end": event["end"],
+            "text": event["text"].replace("\n", " "),
+            "position": event["position"],
+            "purpose": BEAT_PURPOSE[label],
+            "measured": True,
+        })
+    return beats
+
+
+BEAT_PURPOSE = {
+    "hook": "最初のテロップ。スクロールを止める役割。",
+    "body": "本題。約束した順序で中身を出す。",
+    "cta": "最後のテロップ。行動を一つだけ言う。",
+}
+
+
+def _frame_takeaways(frames: dict, duration: float) -> list[str]:
+    """Transferable rules, stated in numbers taken from the video itself."""
+    out: list[str] = []
+
+    pacing = frames.get("pacing")
+    if pacing and pacing.get("avg_shot_sec"):
+        out.append(
+            f"平均 {pacing['avg_shot_sec']}秒ごとにカット"
+            f"（{pacing['duration_sec']}秒で{pacing['cut_count']}カット）。"
+        )
+
+    telop = frames.get("telop") or {}
+    band = confidence_band(telop)
+    if telop.get("event_count"):
+        note = "" if band == "high" else f"（OCR信頼度: {band}）"
+        out.append(
+            f"テロップ{telop['event_count']}枚、画面占有率{telop['coverage_ratio']:.0%}、"
+            f"1枚平均{telop['avg_chars']}文字を{telop.get('avg_hold_sec')}秒表示{note}。"
+        )
+        if telop.get("first_telop_sec") is not None:
+            out.append(
+                f"最初のテロップが {telop['first_telop_sec']}秒 で出る。"
+            )
+        if telop.get("dominant_position"):
+            out.append(
+                f"テロップ位置は主に画面{POSITION_JA[telop['dominant_position']]}。"
+            )
+
+    audio = frames.get("audio") or {}
+    if audio.get("has_audio"):
+        from .audio import AUDIO_STYLE_JA
+
+        style = AUDIO_STYLE_JA.get(audio.get("audio_style"), "")
+        if style:
+            out.append(f"音声は{style}。無音区間は{audio['silence_ratio']:.0%}。")
+
+    return out
+
+
+POSITION_JA = {"top": "上部", "middle": "中央", "bottom": "下部"}

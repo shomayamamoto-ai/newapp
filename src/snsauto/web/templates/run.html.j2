@@ -18,6 +18,21 @@
     <div class="stat">{% for h in summary.best_posting_hours_utc %}{{ h }}{% if not loop.last %}·{% endif %}{% else %}-{% endfor %}</div></div>
 </div>
 
+{% if run.filters %}
+<div class="note">
+  <strong>この母集団について</strong>
+  <ul class="tight">
+    <li>{{ run.filters.collected or summary.count }}件取得 → {{ run.filters.kept or summary.count }}件を採用
+      {%- if run.filters.dropped %}（除外: {% for reason, n in run.filters.dropped.items() %}{{ EXCLUSION_JA.get(reason, reason) }} {{ n }}件{% if not loop.last %} / {% endif %}{% endfor %}）{% endif %}</li>
+    {% if run.filters.applied %}<li>適用したフィルタ: {% for key, value in run.filters.applied.items() %}{{ FILTER_JA.get(key, key) }}={{ value }}{% if not loop.last %} / {% endif %}{% endfor %}</li>{% endif %}
+    {% if run.filters.ignored %}<li class="warn">{{ run.platform.value | upper }} が受け付けなかった条件: {% for key, value in run.filters.ignored.items() %}{{ FILTER_JA.get(key, key) }}={{ value }}{% if not loop.last %} / {% endif %}{% endfor %}
+      <span class="sub">— このAPIでは指定できないため、結果には反映されていません。</span></li>{% endif %}
+    {% if run.filters.watch %}<li>定点ウォッチ: @{{ run.filters.watch.handle }}
+      {%- if run.filters.watch.followers %} ・ フォロワー {{ run.filters.watch.followers | int_ }}{% endif %}</li>{% endif %}
+  </ul>
+</div>
+{% endif %}
+
 <h2>上位パフォーマー</h2>
 <p class="sub" style="margin-bottom:8px">エンゲージ率{{ weights.engagement | pct(0) }}・伸び速度{{ weights.velocity | pct(0) }}・到達{{ weights.reach | pct(0) }}の合成スコア順。再生数順ではありません。</p>
 <table>
@@ -60,5 +75,65 @@
     {% for word, count in summary.winning_words %}<span class="tag">{{ word }} <strong>{{ count }}</strong></span>
     {% else %}<p class="sub">なし</p>{% endfor %}</div>
 </div>
+
+{% if telop_posts %}
+<h2>画面内テロップ（実測）</h2>
+<p class="sub" style="margin-bottom:8px">動画から実際に読み取った文字です。キャプションの統計ではありません。</p>
+{% for row in telop_posts %}
+<div class="card" style="margin-bottom:10px">
+  <div class="spread">
+    <strong class="trunc">{% if row.post.url %}<a href="{{ row.post.url }}" target="_blank" rel="noopener">{{ row.post.title or row.post.external_id }}</a>{% else %}{{ row.post.title or row.post.external_id }}{% endif %}</strong>
+    <span class="pill {{ 'ok' if row.band == 'high' else ('mute' if row.band == 'medium' else 'warn') }}">OCR信頼度 {{ BAND_JA.get(row.band, row.band) }}</span>
+  </div>
+  <div class="grid g4" style="margin:10px 0">
+    <div><div class="stat-label">テロップ枚数</div><div class="stat">{{ row.telop.event_count }}</div></div>
+    <div><div class="stat-label">画面占有率</div><div class="stat">{{ (row.telop.coverage_ratio * 100) | round(0) | int }}%</div></div>
+    <div><div class="stat-label">1枚あたり</div><div class="stat">{{ row.telop.avg_chars }}字</div>
+      <div class="stat-note">{{ row.telop.avg_hold_sec or '-' }}秒表示</div></div>
+    <div><div class="stat-label">初回表示</div><div class="stat">{{ row.telop.first_telop_sec }}秒</div></div>
+  </div>
+  {% if row.telop.events %}
+  <table>
+    <thead><tr><th class="num">時刻</th><th>テロップ</th><th>位置</th></tr></thead>
+    <tbody>
+    {% for event in row.telop.events[:8] %}
+      <tr><td class="num">{{ event.start }}s</td>
+          <td class="trunc">{{ event.text | replace('\n', ' ') }}</td>
+          <td><span class="pill mute">{{ POSITION_JA.get(event.position, event.position) }}</span></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if row.pacing %}<p class="sub">編集: {{ row.pacing.cut_count }}カット / 平均{{ row.pacing.avg_shot_sec }}秒</p>{% endif %}
+  {% if row.audio and row.audio.has_audio %}<p class="sub">音声: {{ AUDIO_JA.get(row.audio.audio_style, row.audio.audio_style) }}（無音 {{ (row.audio.silence_ratio * 100) | round(0) | int }}%）</p>{% endif %}
+  {% if row.provenance %}<p class="sub">取得元: {{ row.provenance }}</p>{% endif %}
+</div>
+{% endfor %}
+{% elif telop_unavailable %}
+<h2>画面内テロップ</h2>
+<div class="note"><strong>未測定です。</strong>
+  <p class="sub">{{ telop_unavailable }}</p></div>
+{% endif %}
+
+{% if comment_summary and comment_summary.count %}
+<h2>視聴者が聞いていること</h2>
+<p class="sub" style="margin-bottom:8px">{{ comment_summary.count }}件のコメントのうち{{ (comment_summary.question_share * 100) | round(0) | int }}%が質問。いいね数順＝同じ疑問を持つ人の多さ順です。</p>
+<table>
+  <thead><tr><th class="num">いいね</th><th>コメント</th></tr></thead>
+  <tbody>
+  {% for row in comment_summary.top_questions %}
+    <tr><td class="num">{{ row.likes }}</td><td><div class="trunc">{{ row.text }}</div></td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if comment_summary.unmet_needs %}
+<h3>要望・不満</h3>
+{% for row in comment_summary.unmet_needs %}<div class="sub">・{{ row.text }}（{{ row.likes }}）</div>{% endfor %}
+{% endif %}
+{% if comment_summary.recurring_terms %}
+<h3>繰り返し出てくる語</h3>
+{% for word, count in comment_summary.recurring_terms %}<span class="tag">{{ word }} <strong>{{ count }}</strong></span>{% endfor %}
+{% endif %}
+{% endif %}
 {% endif %}
 {% endblock %}

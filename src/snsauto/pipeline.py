@@ -51,7 +51,9 @@ from .platforms import (
 from .platforms.accounts import AccountService
 from .reporting.service import ReportService
 from .storage import StorageError, build_storage
+from .research.comments import CommentMiner
 from .research.keyword import ResearchService
+from .research.watch import WatchService, diff_runs
 from .research.structure import StructureService
 
 log = logging.getLogger(__name__)
@@ -99,12 +101,14 @@ class Pipeline:
         self.settings = settings or get_settings()
         self.llm = llm if llm is not None else build_client(self.settings)
         self.research = ResearchService(session, self.settings)
-        self.structure = StructureService(session, self.llm)
+        self.structure = StructureService(session, self.llm, self.settings)
         self.scripts = ScriptService(session, self.llm)
         self.storyboards = StoryboardService(session, self.llm)
         self.images = ImageGenerator(settings=self.settings)
         self.visuals = VisualSourcer(session, self.settings, images=self.images)
         self.voice = VoiceService(session, self.settings)
+        self.comments = CommentMiner(session, self.settings, self.llm)
+        self.watch = WatchService(session, self.settings, self.research)
         self.metrics = MetricsCollector(session, self.settings)
         self.pdca = PdcaService(session, self.llm)
         self.reports = ReportService(session, self.settings)
@@ -135,6 +139,26 @@ class Pipeline:
             except Exception as exc:
                 log.warning("structure analysis failed for post %s: %s", post.id, exc)
         return analysed
+
+    def mine_comments(self, run: ResearchRun, top_n: int = 10) -> int:
+        """Pull the comment text on the top posts. Never fatal."""
+        try:
+            return self.comments.mine_run(run, top_n=top_n)
+        except Exception as exc:
+            log.warning("comment mining failed for run %s: %s", run.id, exc)
+            return 0
+
+    def sweep_competitors(self, project: Project, limit: int = 25) -> dict:
+        """Sweep every watched competitor and diff each against its last run."""
+        outcome = self.watch.sweep_all(project, limit=limit)
+        trends = {}
+        for run in outcome["runs"]:
+            self.analyze_structures(run, top_n=5)
+            previous = self.watch.previous_run(run)
+            if previous is not None:
+                trends[run.account.display] = diff_runs(previous, run)
+        outcome["trends"] = trends
+        return outcome
 
     def write_script(
         self,
@@ -383,6 +407,7 @@ class Pipeline:
         visual_mode: str | None = None,
         narrate: bool = True,
         account_ids: list[int] | None = None,
+        mine_comments: bool = True,
     ) -> PipelineResult:
         result = PipelineResult(project=project)
 
@@ -396,9 +421,11 @@ class Pipeline:
         except Exception as exc:
             result.errors.append(f"research: {exc}")
 
-        # 2. structure analysis
+        # 2. structure analysis, then the comment text on the same top posts
         if result.run and result.run.posts:
             self.analyze_structures(result.run)
+            if mine_comments:
+                self.mine_comments(result.run)
 
         # 3-4. script and storyboard
         try:

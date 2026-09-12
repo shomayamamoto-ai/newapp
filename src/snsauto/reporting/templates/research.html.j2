@@ -88,6 +88,44 @@
   </div>
 </div>
 
+{% if telop_rows %}
+<h2>On-screen telop, measured from the video</h2>
+<p class="sub">Read from the frames themselves, not from the caption.</p>
+<table>
+  <thead><tr><th>Post</th><th class="num">Cards</th><th class="num">Coverage</th>
+             <th class="num">Chars/card</th><th class="num">Hold</th>
+             <th class="num">First telop</th><th>Position</th></tr></thead>
+  <tbody>
+  {% for row in telop_rows %}
+    <tr>
+      <td>{{ row.post.title or row.post.external_id }}</td>
+      <td class="num">{{ row.telop.event_count }}</td>
+      <td class="num">{{ (row.telop.coverage_ratio * 100) | round(0) | int }}%</td>
+      <td class="num">{{ row.telop.avg_chars }}</td>
+      <td class="num">{{ row.telop.avg_hold_sec or '-' }}s</td>
+      <td class="num">{{ row.telop.first_telop_sec }}s</td>
+      <td>{{ row.telop.dominant_position }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if comment_summary and comment_summary.count %}
+<h2>What viewers are asking</h2>
+<p class="sub">{{ comment_summary.count }} comments,
+  {{ (comment_summary.question_share * 100) | round(0) | int }}% of them questions.
+  Ranked by likes - agreement, not recency.</p>
+<table>
+  <thead><tr><th class="num">Likes</th><th>Comment</th></tr></thead>
+  <tbody>
+  {% for row in comment_summary.top_questions %}
+    <tr><td class="num">{{ row.likes }}</td><td>{{ row.text }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <div class="note">
   <strong>How to use this:</strong> target the
   {{ summary.duration_sec.band_top or 'observed' }} duration band, open with the

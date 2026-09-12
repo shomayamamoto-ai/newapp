@@ -627,3 +627,50 @@ class TestConnectedAccountManagement:
         caps = client.get("/api/capabilities").json()
         assert caps["tiktok"]["publish"] is True
         assert caps["tiktok"]["source"] == "connected"
+
+
+class TestOcrEnvironmentReport:
+    """Tesseract installed but without jpn data must not read as ready."""
+
+    def test_missing_tesseract_is_reported_as_unavailable(self, monkeypatch):
+        from snsauto.web import app as webapp
+
+        monkeypatch.setattr(
+            "snsauto.research.telop.TesseractReader.available", staticmethod(lambda: False)
+        )
+        assert webapp._ocr_status() == (False, "")
+
+    def test_tesseract_without_japanese_data_is_not_ready(self, monkeypatch):
+        # It would happily "read" Japanese telop as latin noise, which is
+        # worse than saying the capability is missing.
+        import subprocess
+
+        from snsauto.web import app as webapp
+
+        monkeypatch.setattr(
+            "snsauto.research.telop.TesseractReader.available", staticmethod(lambda: True)
+        )
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess(a, 0, "List of langs:\neng\n", ""),
+        )
+        ok, detail = webapp._ocr_status()
+        assert ok is False
+        assert "jpn" in detail
+
+    def test_japanese_data_present_is_ready(self, monkeypatch):
+        import subprocess
+
+        from snsauto.web import app as webapp
+
+        monkeypatch.setattr(
+            "snsauto.research.telop.TesseractReader.available", staticmethod(lambda: True)
+        )
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess(
+                a, 0, "List of langs:\neng\njpn\njpn_vert\n", ""),
+        )
+        ok, detail = webapp._ocr_status()
+        assert ok is True
+        assert detail == "jpn+vert"

@@ -11,6 +11,7 @@ from ..analytics.collect import platform_breakdown, summarize_publication
 from ..config import get_settings
 from ..models import PdcaCycle, Project, Publication, PublicationStatus, Report, ResearchRun
 from ..platforms import PostRecord
+from ..research.comments import summarize_comments
 from ..research.keyword import W_ENGAGEMENT, W_REACH, W_VELOCITY, summarize_corpus
 from .pdf import PdfError, html_to_pdf
 from .templates import TemplateRegistry
@@ -70,12 +71,23 @@ class ReportService:
         hooks = Counter(
             p.structure.hook_type for p in run.posts if p.structure and p.structure.hook_type
         )
+        telop_rows = []
+        for post in sorted(run.posts, key=lambda p: p.rank):
+            onscreen = ((post.structure.telop if post.structure else None) or {}).get(
+                "onscreen"
+            ) or {}
+            if onscreen.get("event_count"):
+                telop_rows.append({"post": post, "telop": onscreen})
+
+        comments = [c for p in run.posts for c in p.comments_mined]
         return self._emit(
             run.project, "research", "research.html.j2",
             f"research-{run.id}-{run.platform.value}",
             {
                 "run": run,
                 "summary": summary,
+                "telop_rows": telop_rows,
+                "comment_summary": summarize_comments(comments),
                 "hook_distribution": hooks.most_common(),
                 # Sourced from the scorer so the caption cannot drift from the
                 # weights actually used to rank.

@@ -85,6 +85,9 @@ class Project(Base, TimestampMixin):
     # Persona, tone, banned words, brand colours - fed into every LLM prompt.
     brand_profile: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    competitor_accounts: Mapped[list["CompetitorAccount"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     research_runs: Mapped[list["ResearchRun"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -109,7 +112,21 @@ class ResearchRun(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(String(50), default="api")
     notes: Mapped[str | None] = mapped_column(Text)
 
+    # What shaped this population: which search options the platform actually
+    # honoured, which it dropped, and how many posts the exclusion rules
+    # removed. Without it a run's numbers cannot be compared to another run's.
+    filters: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # Set when this run is a scheduled sweep of one watched competitor rather
+    # than a keyword search.
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("competitor_accounts.id")
+    )
+
     project: Mapped[Project] = relationship(back_populates="research_runs")
+    account: Mapped["CompetitorAccount | None"] = relationship(
+        back_populates="runs"
+    )
     posts: Mapped[list["CompetitorPost"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
@@ -147,6 +164,9 @@ class CompetitorPost(Base, TimestampMixin):
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 
     run: Mapped[ResearchRun] = relationship(back_populates="posts")
+    comments_mined: Mapped[list["PostComment"]] = relationship(
+        back_populates="post", cascade="all, delete-orphan"
+    )
     structure: Mapped["StructureAnalysis | None"] = relationship(
         back_populates="post", cascade="all, delete-orphan", uselist=False
     )
@@ -170,6 +190,68 @@ class StructureAnalysis(Base, TimestampMixin):
     takeaways: Mapped[list] = mapped_column(JSON, default=list)
 
     post: Mapped[CompetitorPost] = relationship(back_populates="structure")
+
+
+class CompetitorAccount(Base, TimestampMixin):
+    """A competitor worth watching over time rather than searching for once.
+
+    Keyword runs answer "what is working for this topic". Watching an account
+    answers "what is this specific rival doing now", which is the question that
+    actually recurs week to week.
+    """
+
+    __tablename__ = "competitor_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "platform", "handle", name="uq_account_handle"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    platform: Mapped[Platform] = mapped_column(Enum(Platform))
+    handle: Mapped[str] = mapped_column(String(200), index=True)
+    external_id: Mapped[str | None] = mapped_column(String(200))
+    label: Mapped[str | None] = mapped_column(String(200))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    project: Mapped[Project] = relationship(back_populates="competitor_accounts")
+    runs: Mapped[list["ResearchRun"]] = relationship(back_populates="account")
+
+    @property
+    def display(self) -> str:
+        return self.label or f"@{self.handle}"
+
+
+class PostComment(Base, TimestampMixin):
+    """A viewer comment on a competing post.
+
+    The comment *count* was already in CompetitorPost. This is the text, which
+    is where the questions people actually have get written down.
+    """
+
+    __tablename__ = "post_comments"
+    __table_args__ = (
+        UniqueConstraint("post_id", "external_id", name="uq_comment_external"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    post_id: Mapped[int] = mapped_column(ForeignKey("competitor_posts.id"))
+    external_id: Mapped[str] = mapped_column(String(200))
+    text: Mapped[str] = mapped_column(Text)
+    author: Mapped[str | None] = mapped_column(String(200))
+    likes: Mapped[int] = mapped_column(Integer, default=0)
+    reply_count: Mapped[int] = mapped_column(Integer, default=0)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Set by the mining pass: question | complaint | request | praise | other
+    intent: Mapped[str | None] = mapped_column(String(40), index=True)
+
+    # back_populates targets `comments_mined`, not `comments`: the latter is
+    # the integer comment *count* that came back with the post.
+    post: Mapped["CompetitorPost"] = relationship(back_populates="comments_mined")
 
 
 class Script(Base, TimestampMixin):

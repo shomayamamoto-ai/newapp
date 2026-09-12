@@ -8,6 +8,7 @@ heuristic path - the pipeline degrades, it does not crash.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 
@@ -17,6 +18,7 @@ from .schemas import (
     SCRIPT_SCHEMA,
     STORYBOARD_SCHEMA,
     STRUCTURE_SCHEMA,
+    TELOP_FRAME_SCHEMA,
 )
 
 log = logging.getLogger(__name__)
@@ -91,7 +93,7 @@ class LLMClient:
         self.model = model
         self.last_usage: dict | None = None
 
-    def _json(self, prompt: str, schema: dict, effort: str = "high") -> dict:
+    def _json(self, prompt: str | list, schema: dict, effort: str = "high") -> dict:
         # The system prompt is byte-identical on every call, so caching it turns
         # a per-request cost into a once-per-window one. The volatile part (the
         # brief, the research corpus) goes in the user turn, after the
@@ -198,6 +200,41 @@ transferable rules another creator could apply, not a description of this post."
             return self._json(prompt, STRUCTURE_SCHEMA, effort="medium")
         except (LLMUnavailable, json.JSONDecodeError) as exc:
             log.warning("structure analysis failed, using heuristics: %s", exc)
+            return None
+
+    def read_telop_frame(self, image_path) -> dict | None:
+        """Read one video frame's burned-in text, with how it is styled.
+
+        This is the half of telop analysis OCR structurally cannot do: colour,
+        weight, decoration and which line is the headline. Used on a handful of
+        distinct cards per video, not on every sampled frame.
+        """
+        from pathlib import Path
+
+        path = Path(image_path)
+        media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        data = base64.standard_b64encode(path.read_bytes()).decode()
+
+        content = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": data},
+            },
+            {
+                "type": "text",
+                "text": (
+                    "Read the telop (burned-in on-screen text) in this short-form "
+                    "video frame. Report the text exactly as shown, including line "
+                    "breaks. Exclude the platform UI, the account handle, the "
+                    "caption bar and any watermark - those are not telop. If there "
+                    "is no telop, return an empty string for `text`."
+                ),
+            },
+        ]
+        try:
+            return self._json(content, TELOP_FRAME_SCHEMA, effort="low")
+        except (LLMUnavailable, json.JSONDecodeError) as exc:
+            log.warning("telop frame read failed: %s", exc)
             return None
 
     def review_cycle(self, *, cycle: dict, metrics: dict, baseline: dict) -> dict:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Protocol, runtime_checkable
 
 from ..models import Platform
@@ -55,6 +55,45 @@ class PostRecord:
 
 
 @dataclass(slots=True)
+class SearchOptions:
+    """How to shape the population a research run collects.
+
+    The default population - "the N most relevant results" - is the wrong one
+    surprisingly often: on YouTube it skews towards old, well-established
+    videos, which is exactly the corpus you do *not* want when the question is
+    what is working now. Every field here narrows it deliberately.
+
+    Adapters ignore what their platform cannot express and report that through
+    ``supported_options()``, so a run can say which filters actually applied
+    instead of implying all of them did.
+    """
+
+    published_within_days: int | None = None
+    video_duration: str | None = None        # short | medium | long
+    order: str = "relevance"                 # relevance | date | views
+    region: str | None = None
+
+    def published_after(self) -> datetime | None:
+        if not self.published_within_days:
+            return None
+        return datetime.now(timezone.utc) - timedelta(days=self.published_within_days)
+
+    def applied(self, supported: set[str]) -> dict:
+        """What was actually sent, and what the platform dropped."""
+        requested = {
+            "published_within_days": self.published_within_days,
+            "video_duration": self.video_duration,
+            "order": self.order if self.order != "relevance" else None,
+            "region": self.region,
+        }
+        requested = {k: v for k, v in requested.items() if v}
+        return {
+            "applied": {k: v for k, v in requested.items() if k in supported},
+            "ignored": {k: v for k, v in requested.items() if k not in supported},
+        }
+
+
+@dataclass(slots=True)
 class PublishRequest:
     video_path: str
     caption: str = ""
@@ -81,6 +120,37 @@ class PublishResult:
 
 
 @dataclass(slots=True)
+class AccountProfile:
+    """A competitor account, as the platform describes it.
+
+    ``followers`` is the field keyword search never gives us. It is what lets
+    an engagement rate be read as "this format worked" rather than "this
+    account is big", so watching accounts is also how follower normalisation
+    becomes possible at all.
+    """
+
+    handle: str
+    platform: Platform
+    external_id: str | None = None
+    name: str | None = None
+    followers: int | None = None
+    post_count: int | None = None
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class CommentRecord:
+    """One viewer comment. The text is the point - counts we already had."""
+
+    external_id: str
+    text: str
+    author: str | None = None
+    likes: int = 0
+    published_at: datetime | None = None
+    reply_count: int = 0
+
+
+@dataclass(slots=True)
 class MetricRecord:
     views: int = 0
     likes: int = 0
@@ -97,7 +167,9 @@ class PlatformAdapter(Protocol):
 
     def capabilities(self) -> set[Capability]: ...
 
-    def search(self, keyword: str, limit: int = 50) -> list[PostRecord]: ...
+    def search(
+        self, keyword: str, limit: int = 50, options: SearchOptions | None = None
+    ) -> list[PostRecord]: ...
 
     def publish(self, request: PublishRequest) -> PublishResult: ...
 
@@ -128,8 +200,25 @@ class BaseAdapter:
                 f"missing credentials or unsupported. See .env.example."
             )
 
-    def search(self, keyword: str, limit: int = 50) -> list[PostRecord]:
+    def supported_options(self) -> set[str]:
+        """Which SearchOptions fields this platform's API can express."""
+        return set()
+
+    def search(
+        self, keyword: str, limit: int = 50, options: "SearchOptions | None" = None
+    ) -> list[PostRecord]:
         raise CapabilityUnavailable(f"{self.platform.value} search not supported")
+
+    def fetch_comments(self, external_id: str, limit: int = 50) -> list["CommentRecord"]:
+        raise CapabilityUnavailable(f"{self.platform.value} comments not supported")
+
+    def fetch_account(
+        self, handle: str, limit: int = 25
+    ) -> tuple["AccountProfile", list[PostRecord]]:
+        """A named competitor's profile and recent posts."""
+        raise CapabilityUnavailable(
+            f"{self.platform.value} account lookup not supported"
+        )
 
     def publish(self, request: PublishRequest) -> PublishResult:
         raise CapabilityUnavailable(f"{self.platform.value} publish not supported")

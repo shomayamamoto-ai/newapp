@@ -49,10 +49,17 @@ docker run --rm -v snsauto-data:/data -v "$PWD:/backup" alpine \
 sudo useradd --system --home /opt/snsauto --shell /usr/sbin/nologin snsauto
 sudo mkdir -p /opt/snsauto/data && sudo chown -R snsauto:snsauto /opt/snsauto
 
-sudo apt install -y python3-venv ffmpeg fonts-noto-cjk nginx
+sudo apt install -y python3-venv ffmpeg fonts-noto-cjk nginx \
+    tesseract-ocr tesseract-ocr-jpn tesseract-ocr-jpn-vert
 sudo -u snsauto python3 -m venv /opt/snsauto/.venv
 sudo -u snsauto /opt/snsauto/.venv/bin/pip install "snsauto[llm,web,pdf,storage] @ ."
 sudo -u snsauto /opt/snsauto/.venv/bin/playwright install chromium
+```
+
+`tesseract-ocr-jpn` は競合動画のテロップを読むために必要です。
+入れない場合、テロップ解析は「未測定」と表示され、他の機能はそのまま動きます。
+
+```bash
 
 sudo cp deploy/systemd/*.service /etc/systemd/system/
 sudo systemctl daemon-reload

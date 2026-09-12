@@ -147,7 +147,8 @@ class TestJobs:
 
     def test_every_kind_has_a_handler(self):
         assert set(HANDLERS) == {
-            "research", "script", "video", "publish", "metrics", "experiment"
+            "research", "watch", "script", "video", "publish", "metrics",
+            "experiment",
         }
 
     def test_a_job_runs_once(self, env):

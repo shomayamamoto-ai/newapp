@@ -15,6 +15,9 @@ from .models import (
     Experiment, PdcaCycle, Platform, Project, ResearchRun, Script, User,
 )
 from .pipeline import Pipeline
+from .research.comments import summarize_comments
+from .research.keyword import build_options
+from .research.watch import diff_runs
 from .platforms import capability_matrix
 from .platforms.tiktok import TikTokAdapter
 from .reporting.templates import TemplateRegistry, list_templates
@@ -31,9 +34,11 @@ footage_app = typer.Typer(help="Real / stock footage library.", no_args_is_help=
 worker_app = typer.Typer(help="Scheduled publishing and metrics collection.", no_args_is_help=True)
 ab_app = typer.Typer(help="A/B experiments.", no_args_is_help=True)
 user_app = typer.Typer(help="Web UI accounts.", no_args_is_help=True)
+watch_app = typer.Typer(help="Watched competitors and trend diffs.", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(research_app, name="research")
+app.add_typer(watch_app, name="watch")
 app.add_typer(create_app, name="create")
 app.add_typer(metrics_app, name="metrics")
 app.add_typer(pdca_app, name="pdca")
@@ -156,6 +161,95 @@ def project_list():
         console.print(table)
 
 
+# ---------------- watch ----------------
+
+@watch_app.command("add")
+def watch_add(
+    project: str,
+    handle: str,
+    platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
+    label: str = typer.Option(None, "--label"),
+):
+    """Register a competitor to sweep on a schedule."""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        account = Pipeline(session).watch.add(proj, platform, handle, label)
+        console.print(
+            f"[green]Watching[/green] {account.display} on {platform.value} "
+            f"(id={account.id})"
+        )
+
+
+@watch_app.command("list")
+def watch_list(project: str):
+    """Show watched competitors and when each was last swept."""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        table = Table(title=f"Watched competitors - {proj.name}", header_style="bold")
+        for column in ("id", "platform", "handle", "label", "last checked"):
+            table.add_column(column)
+        for account in proj.competitor_accounts:
+            table.add_row(
+                str(account.id), account.platform.value, f"@{account.handle}",
+                account.label or "-",
+                account.last_checked_at.strftime("%Y-%m-%d %H:%M")
+                if account.last_checked_at else "[dim]never[/dim]",
+            )
+        console.print(table)
+
+
+@watch_app.command("sweep")
+def watch_sweep(
+    project: str,
+    limit: int = typer.Option(25, "--limit", "-n"),
+):
+    """Sweep every watched competitor and report what moved since last time."""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        outcome = Pipeline(session).sweep_competitors(proj, limit=limit)
+        console.print(f"[green]Swept[/green] {len(outcome['runs'])} competitors")
+        for name, reason in (outcome.get("failed") or {}).items():
+            console.print(f"  [yellow]{name}[/yellow]: {reason}")
+        for name, trend in (outcome.get("trends") or {}).items():
+            if not trend.get("comparable"):
+                console.print(f"  [dim]{name}: {trend.get('reason')}[/dim]")
+                continue
+            console.print(f"  [bold]{name}[/bold]: {trend['headline']}")
+        if not outcome.get("trends"):
+            console.print(
+                "[dim]初回スイープのため比較対象がありません。"
+                "次回から差分が出ます。[/dim]"
+            )
+
+
+@watch_app.command("diff")
+def watch_diff(run_a: int, run_b: int):
+    """Compare two runs of the same target."""
+    init_db()
+    with session_scope() as session:
+        first = session.get(ResearchRun, run_a)
+        second = session.get(ResearchRun, run_b)
+        if not first or not second:
+            raise typer.BadParameter("run not found")
+        result = diff_runs(first, second)
+        if not result.get("comparable"):
+            console.print(f"[yellow]{result.get('reason')}[/yellow]")
+            raise typer.Exit(1)
+        console.print(f"[bold]{result['headline']}[/bold]")
+        for key in ("engagement", "views", "duration", "followers"):
+            change = result.get(key)
+            if change:
+                mark = "*" if change["material"] else " "
+                console.print(
+                    f" {mark} {key:<12} {change['before']} -> {change['after']} "
+                    f"({change['change']:+.1%})"
+                )
+        console.print("[dim]* = ノイズ水準(±15%)を超えた変化[/dim]")
+
+
 # ---------------- research ----------------
 
 @research_app.command("run")
@@ -165,18 +259,51 @@ def research_run(
     platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
     limit: int = typer.Option(50, "--limit", "-n"),
     analyze: bool = typer.Option(True, "--analyze/--no-analyze", help="Break down the top performers"),
+    within_days: int = typer.Option(None, "--within-days", help="Only posts published in the last N days"),
+    duration_band: str = typer.Option(None, "--duration", help="short | medium | long"),
+    order: str = typer.Option(None, "--order", help="relevance | date | views"),
+    comments: bool = typer.Option(False, "--comments", help="Also pull comment text on the top posts"),
 ):
     """Collect and rank the top N competing posts for a keyword."""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
         pipeline = Pipeline(session)
-        run = pipeline.collect_research(proj, keyword, platform, limit)
+        options = build_options(pipeline.settings)
+        if within_days is not None:
+            options.published_within_days = within_days
+        if duration_band:
+            options.video_duration = duration_band
+        if order:
+            options.order = order
+
+        run = pipeline.research.run(proj, keyword, platform, limit=limit,
+                                    options=options)
         console.print(f"[green]Collected[/green] {len(run.posts)} posts (run id={run.id})")
+        _print_filters(run)
         if analyze:
             n = pipeline.analyze_structures(run)
             console.print(f"Analysed structure of top {n} posts")
+        if comments:
+            mined = pipeline.mine_comments(run)
+            console.print(f"Mined {mined} comments")
         _print_top(run)
+
+
+def _print_filters(run: ResearchRun) -> None:
+    """Say which filters the platform honoured - and which it silently did not."""
+    filters = run.filters or {}
+    ignored = filters.get("ignored") or {}
+    dropped = filters.get("dropped") or {}
+    if filters.get("applied"):
+        console.print(f"[dim]Applied: {filters['applied']}[/dim]")
+    if ignored:
+        console.print(
+            f"[yellow]{run.platform.value} ignored:[/yellow] {ignored} "
+            "[dim](its API cannot express these)[/dim]"
+        )
+    if dropped:
+        console.print(f"[dim]Excluded {sum(dropped.values())} posts: {dropped}[/dim]")
 
 
 @research_app.command("import")
@@ -198,6 +325,38 @@ def research_import(
         )
         console.print(f"[green]Imported[/green] {len(run.posts)} posts (run id={run.id})")
         _print_top(run)
+
+
+@research_app.command("comments")
+def research_comments(
+    run_id: int,
+    top_n: int = typer.Option(10, "--top", help="Mine this many top posts"),
+):
+    """Pull comment text for a run's top posts and summarise what people ask."""
+    init_db()
+    with session_scope() as session:
+        run = session.get(ResearchRun, run_id)
+        if not run:
+            raise typer.BadParameter(f"run {run_id} not found")
+        added = Pipeline(session).comments.mine_run(run, top_n=top_n)
+        comments = [c for p in run.posts for c in p.comments_mined]
+        summary = summarize_comments(comments)
+        console.print(f"[green]Mined[/green] {added} new comments "
+                      f"({summary.get('count', 0)} total)")
+        if not summary.get("count"):
+            console.print(
+                "[dim]このランのプラットフォームではコメント本文を取得できません"
+                "（Instagram は自社投稿のみ、TikTok は検索自体が不可）。[/dim]"
+            )
+            return
+        console.print(f"質問の割合: {summary['question_share']:.0%}  "
+                      f"内訳: {summary['intent_mix']}")
+        table = Table(title="よく聞かれていること", header_style="bold")
+        table.add_column("likes", justify="right")
+        table.add_column("comment", max_width=70)
+        for row in summary["top_questions"]:
+            table.add_row(str(row["likes"]), row["text"].replace("\n", " "))
+        console.print(table)
 
 
 def _print_top(run: ResearchRun, n: int = 10):

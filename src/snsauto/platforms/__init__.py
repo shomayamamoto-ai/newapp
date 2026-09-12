@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from ..models import Platform
 from .base import (
+    AccountProfile,
     BaseAdapter,
     Capability,
     CapabilityUnavailable,
+    CommentRecord,
     CredentialsMissing,
     MetricRecord,
     PlatformAdapter,
@@ -14,6 +16,7 @@ from .base import (
     PostRecord,
     PublishRequest,
     PublishResult,
+    SearchOptions,
 )
 from .instagram import InstagramAdapter
 from .tiktok import TikTokAdapter
@@ -74,7 +77,8 @@ def capability_matrix(settings=None, session=None) -> dict[str, dict[str, bool]]
 
 __all__ = [
     "BaseAdapter", "Capability", "CapabilityUnavailable", "CredentialsMissing",
-    "MetricRecord", "PlatformAdapter", "PlatformError", "PostRecord",
+    "AccountProfile", "CommentRecord", "MetricRecord", "PlatformAdapter", "PlatformError",
+    "PostRecord", "SearchOptions",
     "PublishRequest", "PublishResult", "InstagramAdapter", "TikTokAdapter",
     "XAdapter", "YouTubeAdapter", "get_adapter", "adapter_for_account",
     "capability_matrix",

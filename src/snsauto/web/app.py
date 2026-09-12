@@ -26,6 +26,7 @@ from ..analytics.collect import summarize_publication
 from ..config import Settings, get_settings
 from ..db import get_engine, init_db
 from ..models import (
+    CompetitorAccount,
     Alert,
     SocialAccount,
     Experiment,
@@ -51,7 +52,11 @@ from ..platforms.accounts import AccountService
 from ..platforms.oauth import OAuthError, get_provider, oauth_readiness
 from ..storage import build_storage, storage_status
 from ..reporting.templates import _fmt_dt, _fmt_dur, _fmt_int, _fmt_pct
+from ..research.audio import AUDIO_STYLE_JA
+from ..research.comments import summarize_comments
 from ..research.keyword import W_ENGAGEMENT, W_REACH, W_VELOCITY, summarize_corpus
+from ..research.structure import POSITION_JA
+from ..research.watch import WatchService, diff_runs
 
 TEMPLATES = Path(__file__).parent / "templates"
 
@@ -78,6 +83,32 @@ REQUIREMENTS = {
 }
 
 
+def _ocr_status() -> tuple[bool, str]:
+    """Whether telop can be read, and in which languages.
+
+    Tesseract being installed is not enough - without the `jpn` data it reads
+    Japanese telop as noise, which is worse than reporting it unavailable.
+    """
+    import shutil
+    import subprocess
+
+    from ..research.telop import TesseractReader
+
+    if not TesseractReader.available():
+        return False, ""
+    try:
+        proc = subprocess.run(
+            [shutil.which("tesseract"), "--list-langs"],
+            capture_output=True, text=True, timeout=10,
+        )
+        langs = {line.strip() for line in proc.stdout.splitlines()[1:] if line.strip()}
+    except (OSError, subprocess.SubprocessError):
+        return False, "言語データを確認できません"
+    if "jpn" not in langs:
+        return False, "jpn 言語データが未インストール"
+    return True, "jpn" + ("+vert" if "jpn_vert" in langs else "")
+
+
 def _environment_report(settings: Settings) -> list[dict]:
     from ..llm import build_client
     from ..media.ffmpeg import FFmpegError, ffmpeg_path
@@ -90,6 +121,7 @@ def _environment_report(settings: Settings) -> list[dict]:
 
     chromium = chromium_executable()
     llm = build_client(settings)
+    ocr_ok, ocr_detail = _ocr_status()
 
     return [
         {"name": "ffmpeg", "ok": ffmpeg_ok, "detail": Path(ffmpeg).name if ffmpeg_ok else "",
@@ -101,6 +133,14 @@ def _environment_report(settings: Settings) -> list[dict]:
         {"name": "画像生成", "ok": settings.imagegen_provider != "placeholder",
          "detail": settings.imagegen_provider,
          "note": "placeholder はローカル生成。尺とテロップ可読性の検証に使えます"},
+        {"name": "テロップOCR", "ok": ocr_ok, "detail": ocr_detail,
+         "note": "競合動画の画面内テロップを読む。日本語には tesseract-ocr-jpn が必要。"
+                 "無い場合はテロップ解析が『未測定』になり、他は通常どおり動作"},
+        {"name": "競合動画の取得", "ok": bool(settings.video_fetch_cmd),
+         "detail": "外部ダウンローダ設定済み" if settings.video_fetch_cmd
+                   else "公式APIが返すメディアURLのみ",
+         "note": "Instagram は公式APIから取得可。それ以外は SNSAUTO_VIDEO_FETCH_CMD "
+                 "の設定が必要（各社の利用規約の確認は運用者の責任）"},
     ]
 
 
@@ -114,6 +154,24 @@ def _records(run: ResearchRun) -> list[PostRecord]:
         )
         for p in run.posts
     ]
+
+
+# Japanese labels for machine-readable keys the templates surface.
+EXCLUSION_JA = {
+    "excluded_author": "指定アカウント",
+    "excluded_pattern": "除外ワード",
+    "below_min_views": "再生数の下限未満",
+}
+FILTER_JA = {
+    "published_within_days": "投稿からの日数",
+    "video_duration": "尺",
+    "order": "並び順",
+    "region": "地域",
+}
+BAND_JA = {
+    "high": "高", "medium": "中", "low": "低",
+    "no-telop-detected": "テロップ未検出", "unavailable": "未測定",
+}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -302,11 +360,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             "measured": len(measured),
         }
+        watcher = WatchService(session, settings)
+        competitors = []
+        for account in watcher.active(project):
+            latest = max(
+                (r for r in account.runs), key=lambda r: r.id, default=None
+            )
+            headline = None
+            if latest is not None:
+                previous = watcher.previous_run(latest)
+                if previous is not None:
+                    trend = diff_runs(previous, latest)
+                    headline = trend.get("headline") or trend.get("reason")
+            competitors.append({"account": account, "trend": headline})
+
         return render(
             "project.html.j2", session, request, user, nav="project", project=project,
             page_title=project.name, runs=runs, scripts=scripts, job_id=job,
             publications=publications, perf=perf,
             renders=[r["render"] for r in scripts if r["render"]],
+            competitors=competitors,
+            # TikTok has neither keyword search nor an account-lookup API, so
+            # offering it here would only produce a competitor that can never
+            # be swept.
+            watchable_platforms=[
+                p.value for p in Platform if p is not Platform.TIKTOK
+            ],
         )
 
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -321,11 +400,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hooks = Counter(
             p.structure.hook_type for p in run.posts if p.structure and p.structure.hook_type
         )
+
+        telop_posts, analysed_any = [], False
+        for post in posts:
+            telop = (post.structure.telop if post.structure else None) or {}
+            if not telop:
+                continue
+            analysed_any = True
+            onscreen = telop.get("onscreen") or {}
+            if not onscreen.get("event_count"):
+                continue
+            telop_posts.append({
+                "post": post,
+                "telop": onscreen,
+                "band": telop.get("onscreen_confidence", "unavailable"),
+                "pacing": telop.get("pacing"),
+                "audio": telop.get("audio"),
+                "provenance": telop.get("provenance_note"),
+            })
+
+        # Say why there is nothing rather than rendering an empty section that
+        # reads as "this video had no telop".
+        telop_unavailable = None
+        if not telop_posts:
+            if not analysed_any:
+                telop_unavailable = (
+                    "この調査ではまだ構成分析を実行していません。"
+                )
+            else:
+                telop_unavailable = (
+                    "動画ファイルを取得できなかったため、画面内テロップは"
+                    "測定していません。Instagram は公式APIがメディアURLを返す"
+                    "投稿のみ自動取得できます。それ以外は "
+                    "SNSAUTO_VIDEO_FETCH_CMD の設定が必要です。"
+                )
+
+        comments = [c for p in run.posts for c in p.comments_mined]
+
         return render(
             "run.html.j2", session, request, user, nav="project", project=run.project, run=run,
             page_title=run.keyword, posts=posts, summary=summarize_corpus(_records(run)),
             hook_distribution=hooks.most_common(), analysed=sum(hooks.values()) or 1,
             weights={"engagement": W_ENGAGEMENT, "velocity": W_VELOCITY, "reach": W_REACH},
+            telop_posts=telop_posts, telop_unavailable=telop_unavailable,
+            comment_summary=summarize_comments(comments),
+            EXCLUSION_JA=EXCLUSION_JA, FILTER_JA=FILTER_JA, BAND_JA=BAND_JA,
+            POSITION_JA=POSITION_JA, AUDIO_JA=AUDIO_STYLE_JA,
         )
 
     @app.get("/scripts/{script_id}", response_class=HTMLResponse)
@@ -549,14 +669,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def action_research(
         project_id: int, request: Request,
         keyword: str = Form(...), platform: str = Form("youtube"),
-        limit: int = Form(50), csrf_token: str = Form(""),
+        limit: int = Form(50), within_days: int = Form(0),
+        duration_band: str = Form(""), comments: bool = Form(False),
+        csrf_token: str = Form(""),
         session: Session = Depends(get_session), user=Depends(require_write),
     ):
         check_csrf(request, csrf_token)
         return _enqueue(session, "research", {
             "project_id": project_id, "keyword": keyword,
             "platform": platform, "limit": limit,
+            "within_days": within_days or None,
+            "duration_band": duration_band or None,
+            "comments": bool(comments),
         }, project_id, f"/projects/{project_id}")
+
+    @app.post("/projects/{project_id}/watch/add")
+    def action_watch_add(
+        project_id: int, request: Request,
+        handle: str = Form(...), platform: str = Form("youtube"),
+        label: str = Form(""), csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_write),
+    ):
+        check_csrf(request, csrf_token)
+        project = session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "project not found")
+        WatchService(session, settings).add(
+            project, Platform(platform), handle, label or None
+        )
+        session.commit()
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+    @app.post("/projects/{project_id}/watch/sweep")
+    def action_watch_sweep(
+        project_id: int, request: Request, csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_write),
+    ):
+        check_csrf(request, csrf_token)
+        return _enqueue(session, "watch", {"project_id": project_id},
+                        project_id, f"/projects/{project_id}")
+
+    @app.post("/projects/{project_id}/watch/{account_id}/remove")
+    def action_watch_remove(
+        project_id: int, account_id: int, request: Request,
+        csrf_token: str = Form(""),
+        session: Session = Depends(get_session), user=Depends(require_write),
+    ):
+        check_csrf(request, csrf_token)
+        account = session.get(CompetitorAccount, account_id)
+        if account is None or account.project_id != project_id:
+            raise HTTPException(404, "competitor not found")
+        # Retired, not deleted: the sweeps already collected stay comparable.
+        account.active = False
+        session.commit()
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
     @app.post("/projects/{project_id}/script")
     def action_script(

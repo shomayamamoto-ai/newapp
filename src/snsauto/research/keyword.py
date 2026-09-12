@@ -10,12 +10,14 @@ posts that surface are the ones whose structure is worth copying.
 from __future__ import annotations
 
 import math
+import re
 import statistics
 from collections import Counter
 from datetime import datetime, timezone
 
 from ..models import CompetitorPost, Platform, Project, ResearchRun
-from ..platforms import PostRecord, get_adapter
+from ..platforms import PostRecord, SearchOptions, get_adapter
+from .text import tokenize
 
 # Composite weights. Engagement must be strictly dominant - greater than
 # velocity and reach combined - because it is the only signal here that is
@@ -175,24 +177,81 @@ def _duration_band(durations: list[float]) -> str | None:
     return "10min+"
 
 
-_STOP = {
-    "the", "and", "for", "you", "your", "with", "this", "that", "are", "was",
-    "how", "what", "why", "から", "こと", "する", "です", "ます", "して", "ました",
-    "この", "その", "ため", "よう", "など", "だけ", "でも", "ない",
-}
-
-
 def extract_tags(text: str) -> list[str]:
-    import re
-
     return [t.lower() for t in re.findall(r"#([\w぀-ヿ一-鿿]+)", text)]
 
 
 def _keywords(text: str) -> list[str]:
-    import re
+    """Content words, script-aware.
 
-    tokens = re.findall(r"[\w぀-ヿ一-鿿]{2,}", text.lower())
-    return [t for t in tokens if t not in _STOP and not t.isdigit()]
+    This used to be a single character-class regex, which on Japanese matched
+    a whole clause as one token - so `winning_words` counted every title once
+    and ranked nothing. See ``text.tokenize``.
+    """
+    return tokenize(text)
+
+
+def build_options(settings) -> SearchOptions:
+    """Turn configuration into a SearchOptions. Defaults change nothing."""
+    return SearchOptions(
+        published_within_days=getattr(settings, "research_published_within_days", None),
+        video_duration=getattr(settings, "research_video_duration", None),
+        order=getattr(settings, "research_order", "relevance") or "relevance",
+    )
+
+
+def _split_csv(value: str | None) -> set[str]:
+    return {v.strip().lstrip("@").lower() for v in (value or "").split(",") if v.strip()}
+
+
+class ExclusionRules:
+    """Drop posts that should never have been in the population.
+
+    Your own account's posts are the obvious case: leaving them in means the
+    corpus you are benchmarking against contains you, and the aggregate you
+    compare yourself to moves every time you post.
+    """
+
+    def __init__(self, authors: str | None = None, pattern: str | None = None,
+                 min_views: int = 0):
+        self.authors = _split_csv(authors)
+        self.pattern = re.compile(pattern, re.I) if pattern else None
+        self.min_views = max(0, min_views or 0)
+
+    @classmethod
+    def from_settings(cls, settings) -> "ExclusionRules":
+        return cls(
+            authors=getattr(settings, "research_exclude_authors", None),
+            pattern=getattr(settings, "research_exclude_pattern", None),
+            min_views=getattr(settings, "research_min_views", 0),
+        )
+
+    @property
+    def active(self) -> bool:
+        return bool(self.authors or self.pattern or self.min_views)
+
+    def reason(self, record: PostRecord) -> str | None:
+        """Why this post is excluded, or None to keep it."""
+        author = (record.author or "").lstrip("@").lower()
+        if author and author in self.authors:
+            return "excluded_author"
+        if self.min_views and record.views < self.min_views:
+            return "below_min_views"
+        if self.pattern:
+            haystack = f"{record.title or ''} {record.caption or ''}"
+            if self.pattern.search(haystack):
+                return "excluded_pattern"
+        return None
+
+    def apply(self, records: list[PostRecord]) -> tuple[list[PostRecord], dict]:
+        kept, dropped = [], Counter()
+        for record in records:
+            reason = self.reason(record)
+            if reason:
+                dropped[reason] += 1
+            else:
+                kept.append(record)
+        return kept, dict(dropped)
 
 
 class ResearchService:
@@ -210,11 +269,27 @@ class ResearchService:
         limit: int = 50,
         records: list[PostRecord] | None = None,
         source: str = "api",
+        options: SearchOptions | None = None,
+        exclusions: "ExclusionRules | None" = None,
+        account=None,
     ) -> ResearchRun:
         """Collect (or accept pre-collected) posts, score them, and store the run."""
+        options = options or (
+            build_options(self.settings) if self.settings else SearchOptions()
+        )
+        if exclusions is None and self.settings is not None:
+            exclusions = ExclusionRules.from_settings(self.settings)
+
+        shaping: dict = {}
         if records is None:
             adapter = get_adapter(platform, settings=self.settings)
-            records = adapter.search(keyword, limit=limit)
+            records = adapter.search(keyword, limit=limit, options=options)
+            shaping = options.applied(adapter.supported_options())
+
+        collected = len(records)
+        dropped: dict = {}
+        if exclusions is not None and exclusions.active:
+            records, dropped = exclusions.apply(records)
 
         run = ResearchRun(
             project_id=project.id,
@@ -222,6 +297,13 @@ class ResearchService:
             platform=platform,
             limit=limit,
             source=source,
+            account_id=getattr(account, "id", None),
+            filters={
+                **shaping,
+                "collected": collected,
+                "kept": len(records),
+                "dropped": dropped,
+            },
         )
         self.session.add(run)
         self.session.flush()

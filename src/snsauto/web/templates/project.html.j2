@@ -39,6 +39,21 @@
       </select></div>
     <div class="f"><label for="rl">件数</label>
       <input id="rl" name="limit" type="number" value="50" min="10" max="200" style="width:72px"></div>
+    <div class="f"><label for="rw">期間</label>
+      <select id="rw" name="within_days">
+        <option value="0">指定なし</option>
+        <option value="7">直近7日</option>
+        <option value="30">直近30日</option>
+        <option value="90">直近90日</option>
+      </select></div>
+    <div class="f"><label for="rd">尺</label>
+      <select id="rd" name="duration_band">
+        <option value="">指定なし</option>
+        <option value="short">〜4分</option>
+        <option value="medium">4〜20分</option>
+        <option value="long">20分〜</option>
+      </select></div>
+    <div class="f chk"><label for="rc"><input id="rc" type="checkbox" name="comments" value="true"> コメントも取得</label></div>
     <button class="btn">調査を開始</button>
   </form>
 
@@ -147,4 +162,48 @@
   </tbody>
 </table>
 {% else %}<p class="empty">PDCAサイクルがありません。</p>{% endif %}
+{% if user and user.can_write %}
+<h2>定点ウォッチしている競合</h2>
+<p class="sub" style="margin-bottom:8px">キーワード調査が「この話題で何が効くか」に答えるのに対し、こちらは「この競合が今何をしているか」に答えます。2回目以降のスイープで前回との差分が出ます。</p>
+
+{% if competitors %}
+<table>
+  <thead><tr><th>競合</th><th>媒体</th><th>最終確認</th><th>直近の変化</th><th></th></tr></thead>
+  <tbody>
+  {% for row in competitors %}
+    <tr>
+      <td><strong>{{ row.account.display }}</strong> <span class="sub">@{{ row.account.handle }}</span></td>
+      <td><span class="pill mute">{{ row.account.platform.value }}</span></td>
+      <td>{% if row.account.last_checked_at %}{{ row.account.last_checked_at | dt }}{% else %}<span class="sub">未実行</span>{% endif %}</td>
+      <td>{% if row.trend %}{{ row.trend }}{% else %}<span class="sub">比較対象なし（次回から）</span>{% endif %}</td>
+      <td><form method="post" action="/projects/{{ project.id }}/watch/{{ row.account.id }}/remove" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn ghost">停止</button></form></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<form class="act" method="post" action="/projects/{{ project.id }}/watch/sweep" style="margin-top:10px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="btn">全員をスイープ</button>
+</form>
+{% else %}
+<p class="empty">まだ登録がありません。</p>
+{% endif %}
+
+<form class="act" method="post" action="/projects/{{ project.id }}/watch/add" style="margin-top:10px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="f" style="flex:1;min-width:150px">
+    <label for="wh">競合のハンドル</label>
+    <input id="wh" name="handle" required placeholder="@rival_channel"></div>
+  <div class="f"><label for="wp">媒体</label>
+    <select id="wp" name="platform">
+      {% for p in watchable_platforms %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select></div>
+  <div class="f"><label for="wl">表示名</label>
+    <input id="wl" name="label" placeholder="任意"></div>
+  <button class="btn">追加</button>
+</form>
+<p class="sub">TikTok は公開キーワード検索APIもアカウント参照APIも無いため、定点ウォッチの対象外です。Instagram は相手がビジネス／クリエイターアカウントの場合のみ参照できます。</p>
+{% endif %}
 {% endblock %}

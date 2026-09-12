@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fontconfig \
         ca-certificates \
         curl \
+        tesseract-ocr \
+        tesseract-ocr-jpn \
+        tesseract-ocr-jpn-vert \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 

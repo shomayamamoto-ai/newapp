@@ -149,3 +149,42 @@ IMPROVEMENT_SCHEMA = {
     "required": ["verdict", "learnings", "next_actions", "next_hypothesis"],
     "additionalProperties": False,
 }
+
+
+# One video frame, read for its burned-in text. Coordinates are normalised to
+# the frame (0-1) so the caller never needs the source resolution.
+TELOP_FRAME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {
+            "type": "string",
+            "description": "On-screen text only. Exclude the platform's own "
+                           "UI, the account handle, and any watermark. Empty "
+                           "string when the frame carries no telop.",
+        },
+        "bbox": {
+            "type": "object",
+            "properties": {
+                "x0": {"type": "number"}, "y0": {"type": "number"},
+                "x1": {"type": "number"}, "y1": {"type": "number"},
+            },
+            "required": ["x0", "y0", "x1", "y1"],
+            "additionalProperties": False,
+        },
+        "color": {"type": "string", "description": "Dominant text colour name"},
+        "weight": {"type": "string", "enum": ["light", "regular", "bold", "heavy"]},
+        "decoration": {
+            "type": "string",
+            "description": "outline / drop-shadow / highlight-box / none",
+        },
+        "role": {"type": "string", "enum": ["headline", "subtitle", "label", "none"]},
+        "emphasis": {
+            "type": "string",
+            "description": "How a word is singled out: colour change, size "
+                           "jump, underline, or none",
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 100},
+    },
+    "required": ["text", "bbox", "confidence"],
+    "additionalProperties": False,
+}

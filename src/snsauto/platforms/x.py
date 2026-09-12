@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -16,6 +16,7 @@ from ..config import get_settings
 from ..models import Platform
 from ..utils.oauth1 import sign
 from .base import (
+    AccountProfile,
     BaseAdapter,
     Capability,
     MetricRecord,
@@ -23,6 +24,8 @@ from .base import (
     PostRecord,
     PublishRequest,
     PublishResult,
+    SearchOptions,
+    CommentRecord,
 )
 
 API = "https://api.x.com/2"
@@ -60,8 +63,18 @@ class XAdapter(BaseAdapter):
 
     # ---------- research ----------
 
-    def search(self, keyword: str, limit: int = 50) -> list[PostRecord]:
+    # recent search covers the last 7 days only, so a longer window cannot be
+    # honoured and `published_within_days` is clamped rather than ignored.
+    RECENT_WINDOW_DAYS = 7
+
+    def supported_options(self) -> set[str]:
+        return {"published_within_days", "order"}
+
+    def search(
+        self, keyword: str, limit: int = 50, options: SearchOptions | None = None
+    ) -> list[PostRecord]:
         self._require(Capability.SEARCH)
+        options = options or SearchOptions()
         records: list[PostRecord] = []
         next_token: str | None = None
 
@@ -72,7 +85,16 @@ class XAdapter(BaseAdapter):
                 "tweet.fields": "public_metrics,created_at,author_id,entities",
                 "expansions": "author_id",
                 "user.fields": "username",
+                "sort_order": "recency" if options.order == "date" else "relevancy",
             }
+            since = options.published_after()
+            if since:
+                floor = datetime.now(timezone.utc) - timedelta(
+                    days=self.RECENT_WINDOW_DAYS
+                )
+                # +1 minute: the endpoint rejects a start_time at the exact edge.
+                start = max(since, floor + timedelta(minutes=1))
+                params["start_time"] = start.strftime("%Y-%m-%dT%H:%M:%SZ")
             if next_token:
                 params["next_token"] = next_token
             data = self._get(f"{API}/tweets/search/recent", params)
@@ -104,6 +126,74 @@ class XAdapter(BaseAdapter):
                 break
 
         return records[:limit]
+
+    # ---------- account watch ----------
+
+    def fetch_account(
+        self, handle: str, limit: int = 25
+    ) -> tuple[AccountProfile, list[PostRecord]]:
+        """A named account's profile and its recent posts.
+
+        The posts come from recent search, so the same 7-day ceiling applies:
+        a competitor who posts weekly may show one item, and that is the tier,
+        not their cadence.
+        """
+        self._require(Capability.SEARCH)
+        name = handle.lstrip("@")
+        data = self._get(f"{API}/users/by/username/{name}", {
+            "user.fields": "public_metrics,name,description",
+        })
+        user = data.get("data")
+        if not user:
+            raise PlatformError(f"X account not found: {handle}")
+        metrics = user.get("public_metrics", {})
+        profile = AccountProfile(
+            handle=name,
+            platform=Platform.X,
+            external_id=user.get("id"),
+            name=user.get("name"),
+            followers=int(metrics.get("followers_count", 0) or 0),
+            post_count=int(metrics.get("tweet_count", 0) or 0),
+            raw=user,
+        )
+        posts = self.search(
+            f"from:{name}", limit=limit, options=SearchOptions(order="date")
+        )
+        return profile, posts
+
+    # ---------- comments ----------
+
+    def fetch_comments(self, external_id: str, limit: int = 50) -> list[CommentRecord]:
+        """Replies to a post. On X a reply *is* the comment.
+
+        Replies live in the same recent-search index as everything else, so
+        the 7-day window applies here too: a post older than a week returns
+        nothing, which is a limit of the tier, not an empty conversation.
+        """
+        self._require(Capability.SEARCH)
+        data = self._get(f"{API}/tweets/search/recent", {
+            "query": f"conversation_id:{external_id} is:reply",
+            "max_results": min(100, max(10, limit)),
+            "tweet.fields": "public_metrics,created_at,author_id",
+            "expansions": "author_id",
+            "user.fields": "username",
+        })
+        users = {
+            u["id"]: u.get("username")
+            for u in data.get("includes", {}).get("users", [])
+        }
+        out = []
+        for item in data.get("data", []):
+            metrics = item.get("public_metrics", {})
+            out.append(CommentRecord(
+                external_id=item["id"],
+                text=item.get("text", ""),
+                author=users.get(item.get("author_id")),
+                likes=int(metrics.get("like_count", 0) or 0),
+                published_at=_parse_dt(item.get("created_at")),
+                reply_count=int(metrics.get("reply_count", 0) or 0),
+            ))
+        return out[:limit]
 
     # ---------- publish ----------
 

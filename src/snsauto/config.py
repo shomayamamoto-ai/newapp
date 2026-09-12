@@ -75,6 +75,40 @@ class Settings(BaseSettings):
     stock_api_key: str | None = Field(None, alias="STOCK_API_KEY")
     stock_endpoint: str | None = Field(None, alias="STOCK_ENDPOINT")
 
+    # ---- Competitor research ----
+    # Collection shaping. The default population is "the 50 most relevant
+    # results", which skews old on YouTube; these narrow it deliberately.
+    research_published_within_days: int | None = Field(
+        None, alias="SNSAUTO_RESEARCH_WITHIN_DAYS"
+    )
+    research_video_duration: str | None = Field(
+        None, alias="SNSAUTO_RESEARCH_DURATION"      # short | medium | long
+    )
+    research_order: str = Field("relevance", alias="SNSAUTO_RESEARCH_ORDER")
+    research_min_views: int = Field(0, alias="SNSAUTO_RESEARCH_MIN_VIEWS")
+    # Comma-separated author handles to drop - your own accounts, mostly.
+    research_exclude_authors: str | None = Field(
+        None, alias="SNSAUTO_RESEARCH_EXCLUDE_AUTHORS"
+    )
+    research_exclude_pattern: str | None = Field(
+        None, alias="SNSAUTO_RESEARCH_EXCLUDE_PATTERN"
+    )
+
+    # Telop / frame analysis
+    telop_reader: str = Field("auto", alias="SNSAUTO_TELOP_READER")  # auto|tesseract|vision|off
+    telop_interval_sec: float = Field(0.8, alias="SNSAUTO_TELOP_INTERVAL")
+    telop_max_frames: int = Field(45, alias="SNSAUTO_TELOP_MAX_FRAMES")
+    telop_vision_budget: int = Field(6, alias="SNSAUTO_TELOP_VISION_BUDGET")
+
+    # Competitor video acquisition. Downloading another account's video is
+    # governed by each platform's terms of service, so there is no default
+    # command: the operator sets one deliberately or the feature stays off.
+    video_fetch_cmd: str | None = Field(None, alias="SNSAUTO_VIDEO_FETCH_CMD")
+    video_fetch_timeout: float = Field(300.0, alias="SNSAUTO_VIDEO_FETCH_TIMEOUT")
+
+    # Comment mining
+    comment_fetch_limit: int = Field(50, alias="SNSAUTO_COMMENT_LIMIT")
+
     # Narration (text to speech)
     tts_provider: str = Field("none", alias="TTS_PROVIDER")
     tts_api_key: str | None = Field(None, alias="TTS_API_KEY")

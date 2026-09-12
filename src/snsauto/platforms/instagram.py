@@ -19,6 +19,7 @@ import httpx
 from ..config import get_settings
 from ..models import Platform
 from .base import (
+    AccountProfile,
     BaseAdapter,
     Capability,
     MetricRecord,
@@ -26,6 +27,7 @@ from .base import (
     PostRecord,
     PublishRequest,
     PublishResult,
+    SearchOptions,
 )
 
 API = "https://graph.facebook.com/v21.0"
@@ -78,7 +80,14 @@ class InstagramAdapter(BaseAdapter):
 
     # ---------- research ----------
 
-    def search(self, keyword: str, limit: int = 50) -> list[PostRecord]:
+    def supported_options(self) -> set[str]:
+        # The hashtag endpoints take no filters at all: no date range, no
+        # duration, no sort. Everything has to be filtered after collection.
+        return set()
+
+    def search(
+        self, keyword: str, limit: int = 50, options: SearchOptions | None = None
+    ) -> list[PostRecord]:
         self._require(Capability.SEARCH)
         tag = keyword.lstrip("#").replace(" ", "")
         found = self._get(
@@ -90,16 +99,33 @@ class InstagramAdapter(BaseAdapter):
             raise PlatformError(f"Instagram hashtag not found: {tag}")
         hashtag_id = items[0]["id"]
 
-        media = self._get(
-            f"{API}/{hashtag_id}/top_media",
-            {
-                "user_id": self._user_id(),
-                "fields": "id,caption,media_type,permalink,like_count,comments_count,timestamp",
-                "limit": min(50, limit),
-            },
-        )
+        # top_media caps at 50 per page. Without following `paging.next` a
+        # request for 50 could return 20 and silently look like "that is all
+        # there is"; media_url is requested so the frame tier has something
+        # sanctioned to fetch.
+        raw_items: list[dict] = []
+        params = {
+            "user_id": self._user_id(),
+            "fields": "id,caption,media_type,media_url,permalink,"
+                      "like_count,comments_count,timestamp",
+            "limit": min(50, limit),
+        }
+        url = f"{API}/{hashtag_id}/top_media"
+        seen_pages = 0
+        while len(raw_items) < limit and seen_pages < 10:
+            media = self._get(url, params)
+            page = media.get("data") or []
+            if not page:
+                break
+            raw_items.extend(page)
+            after = (media.get("paging") or {}).get("cursors", {}).get("after")
+            if not after or not (media.get("paging") or {}).get("next"):
+                break
+            params = {**params, "after": after}
+            seen_pages += 1
+
         records = []
-        for item in (media.get("data") or [])[:limit]:
+        for item in raw_items[:limit]:
             records.append(
                 PostRecord(
                     external_id=item["id"],
@@ -113,6 +139,70 @@ class InstagramAdapter(BaseAdapter):
                 )
             )
         return records
+
+    # ---------- account watch ----------
+
+    def fetch_account(
+        self, handle: str, limit: int = 25
+    ) -> tuple[AccountProfile, list[PostRecord]]:
+        """A competitor's Business/Creator account, via business_discovery.
+
+        This is the one Instagram endpoint that returns a *rival's* numbers,
+        and it returns the two the hashtag endpoints never do: followers_count,
+        and media_product_type, which is how a Reel is told from a feed post.
+        It only works when the target is a Business or Creator account - a
+        personal account is invisible to the API, which is a property of their
+        account rather than an error in the request.
+        """
+        self._require(Capability.SEARCH)
+        name = handle.lstrip("@")
+        fields = (
+            f"business_discovery.username({name}){{"
+            "followers_count,media_count,name,username,"
+            f"media.limit({min(50, limit)}){{"
+            "id,caption,like_count,comments_count,media_type,"
+            "media_product_type,media_url,permalink,timestamp"
+            "}}}"
+        )
+        try:
+            data = self._get(f"{API}/{self._user_id()}", {"fields": fields})
+        except PlatformError as exc:
+            if "business_discovery" in str(exc) or "110" in str(exc):
+                raise PlatformError(
+                    f"Instagram: @{name} をビジネス/クリエイターアカウントとして"
+                    "取得できません。相手が個人アカウントの場合、APIからは参照でき"
+                    "ません（規約上の制限であり、回避策はありません）。"
+                ) from exc
+            raise
+
+        discovery = data.get("business_discovery") or {}
+        if not discovery:
+            raise PlatformError(f"Instagram account not found: {handle}")
+
+        profile = AccountProfile(
+            handle=name,
+            platform=Platform.INSTAGRAM,
+            external_id=discovery.get("id"),
+            name=discovery.get("name"),
+            followers=int(discovery.get("followers_count", 0) or 0),
+            post_count=int(discovery.get("media_count", 0) or 0),
+            raw={k: v for k, v in discovery.items() if k != "media"},
+        )
+
+        records = []
+        for item in ((discovery.get("media") or {}).get("data") or [])[:limit]:
+            records.append(PostRecord(
+                external_id=item["id"],
+                platform=Platform.INSTAGRAM,
+                url=item.get("permalink"),
+                caption=item.get("caption"),
+                author=name,
+                published_at=_parse_dt(item.get("timestamp")),
+                likes=int(item.get("like_count", 0) or 0),
+                comments=int(item.get("comments_count", 0) or 0),
+                raw=item,
+            ))
+        return profile, records
 
     # ---------- publish ----------
 

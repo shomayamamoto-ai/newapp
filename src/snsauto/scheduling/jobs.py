@@ -116,14 +116,42 @@ def _pipeline(runner: JobRunner, session):
 
 
 def _research(runner, session, job, params) -> dict:
+    from ..research.keyword import build_options
+
     project = session.get(Project, params["project_id"])
     pipeline = _pipeline(runner, session)
-    run = pipeline.collect_research(
+
+    options = build_options(pipeline.settings)
+    if params.get("within_days"):
+        options.published_within_days = int(params["within_days"])
+    if params.get("duration_band"):
+        options.video_duration = params["duration_band"]
+
+    run = pipeline.research.run(
         project, params["keyword"], Platform(params["platform"]),
-        limit=int(params.get("limit", 50)),
+        limit=int(params.get("limit", 50)), options=options,
     )
     analysed = pipeline.analyze_structures(run)
-    return {"run_id": run.id, "posts": len(run.posts), "analysed": analysed}
+    mined = pipeline.mine_comments(run) if params.get("comments") else 0
+    return {"run_id": run.id, "posts": len(run.posts),
+            "analysed": analysed, "comments": mined}
+
+
+def _watch(runner, session, job, params) -> dict:
+    """Sweep every watched competitor and diff each against its last sweep."""
+    project = session.get(Project, params["project_id"])
+    outcome = _pipeline(runner, session).sweep_competitors(
+        project, limit=int(params.get("limit", 25))
+    )
+    return {
+        "swept": len(outcome["runs"]),
+        "run_ids": [r.id for r in outcome["runs"]],
+        "failed": outcome.get("failed") or {},
+        "trends": {
+            name: trend.get("headline", trend.get("reason"))
+            for name, trend in (outcome.get("trends") or {}).items()
+        },
+    }
 
 
 def _script(runner, session, job, params) -> dict:
@@ -227,6 +255,7 @@ def _experiment(runner, session, job, params) -> dict:
 
 HANDLERS = {
     "research": _research,
+    "watch": _watch,
     "script": _script,
     "video": _video,
     "publish": _publish,
