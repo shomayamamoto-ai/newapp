@@ -10,13 +10,33 @@
 {% else %}
 <div class="grid g4">
   <div class="card"><div class="stat-label">分析件数</div><div class="stat">{{ summary.count }}</div></div>
-  <div class="card"><div class="stat-label">中央値エンゲージ</div><div class="stat">{{ summary.engagement.median | pct }}</div>
-    <div class="stat-note">p90 {{ summary.engagement.p90 | pct }}</div></div>
-  <div class="card"><div class="stat-label">勝ちパターンの尺</div><div class="stat">{{ summary.duration_sec.band_top or '-' }}</div>
-    <div class="stat-note">全体中央値 {{ summary.duration_sec.median_all | dur }}</div></div>
-  <div class="card"><div class="stat-label">投稿時刻 (UTC)</div>
-    <div class="stat">{% for h in summary.best_posting_hours_utc %}{{ h }}{% if not loop.last %}·{% endif %}{% else %}-{% endfor %}</div></div>
+  <div class="card"><div class="stat-label">{{ 'エンゲージ率 中央値' if summary.engagement_is_rate else 'インタラクション 中央値' }}</div>
+    <div class="stat">{{ summary.engagement.median | pct if summary.engagement_is_rate else summary.engagement.median | int_ }}</div>
+    <div class="stat-note">四分位 {{ summary.engagement.p25 | pct if summary.engagement_is_rate else summary.engagement.p25 | int_ }}〜{{ summary.engagement.p75 | pct if summary.engagement_is_rate else summary.engagement.p75 | int_ }}</div></div>
+  <div class="card"><div class="stat-label">勝ちパターンの尺</div>
+    <div class="stat">{{ summary.duration_sec.band_top or 'ばらつき' }}</div>
+    <div class="stat-note">{% if summary.duration_sec.spread_top %}上位 {{ summary.duration_sec.spread_top.p25 | dur }}〜{{ summary.duration_sec.spread_top.p75 | dur }}{% else %}-{% endif %}</div></div>
+  <div class="card"><div class="stat-label">伸びている投稿時刻</div>
+    <div class="stat">{% if summary.timing.usable %}{% for e in summary.timing.best %}{{ e.bucket }}{% if summary.timing.grain == 'hour' %}時{% endif %}{% if not loop.last %}·{% endif %}{% endfor %}{% else %}判定不能{% endif %}</div>
+    <div class="stat-note">{{ summary.timing.timezone }}</div></div>
 </div>
+
+{% if summary.reliability in ('insufficient', 'weak') or not summary.engagement_is_rate or (summary.timing and not summary.timing.usable) %}
+<div class="note warn">
+  <strong>この数字の読み方</strong>
+  <ul class="tight">
+    {% if summary.reliability in ('insufficient', 'weak') %}
+    <li>{{ summary.count }}件は{{ RELIABILITY_JA.get(summary.reliability, summary.reliability) }}。中央値や四分位はこの件数では傾向とばらつきを分けきれません。</li>
+    {% endif %}
+    {% if not summary.engagement_is_rate %}
+    <li>{{ summary.engagement_basis_label }}。<b>他プラットフォームの調査結果とは比較できません。</b></li>
+    {% endif %}
+    {% if summary.timing and not summary.timing.usable %}
+    <li>{{ summary.timing.reason }}</li>
+    {% endif %}
+  </ul>
+</div>
+{% endif %}
 
 {% if run.filters %}
 <div class="note">
@@ -65,6 +85,29 @@
   </tbody>
 </table>
 <p class="sub">上位{{ analysed }}件を構成分析した結果</p>
+{% endif %}
+
+{% if summary.timing and summary.timing.usable %}
+<h2>投稿時刻とパフォーマンス</h2>
+<p class="sub" style="margin-bottom:8px">{{ summary.timing.note }}</p>
+<table>
+  <thead><tr><th>{{ '時刻' if summary.timing.grain == 'hour' else '時間帯' }}（{{ summary.timing.timezone }}）</th>
+             <th class="num">件数</th><th class="num">エンゲージ中央値</th><th>全体中央値との差</th></tr></thead>
+  <tbody>
+  {% for entry in (summary.timing.by_hour if summary.timing.grain == 'hour' else summary.timing.by_daypart)['all'][:8] %}
+    <tr>
+      <td>{{ entry.bucket }}{% if summary.timing.grain == 'hour' %}時{% endif %}
+          {%- if entry.above_median %} <span class="pill ok">上位</span>{% endif %}</td>
+      <td class="num">{{ entry.posts }}</td>
+      <td class="num">{{ entry.median_engagement | pct if summary.engagement_is_rate else entry.median_engagement | int_ }}</td>
+      <td class="num">{{ '%+.0f' | format(entry.lift_vs_median * 100) ~ '%' if entry.lift_vs_median is number else '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if (summary.timing.by_hour if summary.timing.grain == 'hour' else summary.timing.by_daypart)['thin'] %}
+<p class="sub">件数が足りず判定対象外: {% for e in (summary.timing.by_hour if summary.timing.grain == 'hour' else summary.timing.by_daypart)['thin'][:6] %}{{ e.bucket }}{% if summary.timing.grain == 'hour' %}時{% endif %}({{ e.posts }}){% if not loop.last %} / {% endif %}{% endfor %}</p>
+{% endif %}
 {% endif %}
 
 <div class="grid g2">

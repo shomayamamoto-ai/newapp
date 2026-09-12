@@ -27,7 +27,44 @@
   <div class="card"><div class="stat-label">対ベースライン</div>
     <div class="stat">{{ '%+.4f' | format(ev.delta_vs_baseline) if ev.delta_vs_baseline is number else '-' }}</div></div>
 </div>
-<div class="note">{{ ev.reason }}</div>
+<div class="note {{ 'warn' if ev.verdict == 'inconclusive' }}">{{ ev.reason }}</div>
+
+<div class="note">
+  <strong>この判定がどれだけ言えるか</strong>
+  <ul class="tight">
+    <li>対象 {{ ev.sample }}本
+      {%- if ev.baseline_sample %} / 比較対象 {{ ev.baseline_sample }}本{% endif %}
+      — <span class="{{ 'warn' if ev.reliability in ('insufficient', 'weak') }}">{{ RELIABILITY_JA.get(ev.reliability, ev.reliability) }}</span></li>
+    {% if ev.relative_change is number and ev.detectable_change is number %}
+    <li>測定した変化 <strong>{{ '%+.0f' | format(ev.relative_change * 100) }}%</strong>
+      に対し、この本数で判別できるのは <strong>{{ '%.0f' | format(ev.detectable_change * 100) }}%以上</strong> の差までです。
+      {%- if ev.relative_change | abs < ev.detectable_change %}
+      <span class="warn">＝ この差はばらつきと区別できません。</span>{% endif %}</li>
+    {% endif %}
+    {% if ev.significance and ev.significance.comparable %}
+    <li>{{ '%.0f' | format(ev.significance.confidence * 100) }}%信頼区間
+      [{{ '%+.4f' | format(ev.significance.low) }}, {{ '%+.4f' | format(ev.significance.high) }}]
+      — {% if ev.significance.significant %}ゼロを含まないため、偶然では説明しにくい差です{% else %}ゼロを含むため、差があるとは言えません{% endif %}</li>
+    {% endif %}
+    <li>比較方法:
+      {%- if ev.age_matched %} 公開24時間後の値どうしを比較（累計値で比べると、古い投稿ほど有利になるため）
+      {%- else %} 最新の累計値で比較{% endif %}
+      {%- if ev.platform_scope and ev.platform_scope != 'mixed' %} ・ {{ ev.platform_scope | upper }} 内でのみ比較{% endif %}</li>
+    {% if ev.excluded %}
+    <li class="sub">除外: {% for reason, n in ev.excluded.items() %}{{ EXCLUSION_PDCA_JA.get(reason, reason) }} {{ n }}本{% if not loop.last %} / {% endif %}{% endfor %}</li>
+    {% endif %}
+    {% if ev.baseline_drifted and ev.planned_baseline is number %}
+    <li class="sub">計画時のベースライン {{ ev.planned_baseline }} ではなく、このサイクルの投稿を除いた {{ ev.baseline }} と比較しています。</li>
+    {% endif %}
+    {% if posts_needed and posts_needed.more %}
+      {% if posts_needed.reachable %}
+    <li><strong>あと約{{ posts_needed.more }}本</strong>投稿すれば、この差を判定できる見込みです。</li>
+      {% else %}
+    <li class="warn">この差を証明するには約{{ posts_needed.estimated }}本の追加が必要です。<strong>追いかける価値があるほど大きい差ではありません。</strong></li>
+      {% endif %}
+    {% endif %}
+  </ul>
+</div>
 {% else %}<p class="empty">未計測です。</p>{% endif %}
 
 {% set posts = (cycle.result or {}).get('per_post') %}

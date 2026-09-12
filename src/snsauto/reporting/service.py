@@ -67,7 +67,9 @@ class ReportService:
             )
             for p in run.posts
         ]
-        summary = summarize_corpus(records)
+        summary = summarize_corpus(
+            records, timezone_name=getattr(self.settings, "timezone", None)
+        )
         hooks = Counter(
             p.structure.hook_type for p in run.posts if p.structure and p.structure.hook_type
         )

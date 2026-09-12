@@ -248,6 +248,9 @@ def diff_runs(previous: ResearchRun, current: ResearchRun) -> dict:
         "duration": _delta(after["median_duration"], before["median_duration"]),
         "followers": _delta(after["followers"], before["followers"]),
         "hook_shift": _hook_shift(before["hook_mix"], after["hook_mix"]),
+        # Measured over the interval between the two sweeps, not averaged over
+        # each post's lifetime.
+        "velocity": observed_velocity(previous, current)[:5],
         "top_new": [
             {"title": p.title or (p.caption or "")[:80], "url": p.url,
              "views": p.views, "engagement_rate": round(p.engagement_rate, 4)}
@@ -294,6 +297,71 @@ def _headline(diff: dict) -> str:
     if not moves:
         return "前回から有意な変化はありません。"
     return "、".join(moves) + "。"
+
+
+def observed_velocity(previous: ResearchRun, current: ResearchRun) -> list[dict]:
+    """Real view velocity, from two observations of the same posts.
+
+    Lifetime views-per-day averages a post's whole history and so cannot tell
+    a video that is climbing now from one that climbed a year ago. Two sweeps
+    give the actual delta over an actual interval, which is the number that
+    says which competitor post is moving *today*.
+
+    Only posts present in both sweeps qualify - a post seen once has no
+    interval to divide by.
+    """
+    if not previous.created_at or not current.created_at:
+        return []
+    hours = (current.created_at - previous.created_at).total_seconds() / 3600.0
+    if hours < 1.0:
+        # Under an hour the delta is mostly rounding in the platform's own
+        # counters, and dividing by it inflates everything.
+        return []
+
+    before = {p.external_id: p for p in previous.posts}
+    rows = []
+    for post in current.posts:
+        earlier = before.get(post.external_id)
+        if earlier is None:
+            continue
+        delta_views = post.views - earlier.views
+        delta_interactions = (
+            (post.likes + post.comments + post.shares)
+            - (earlier.likes + earlier.comments + earlier.shares)
+        )
+        rows.append({
+            "external_id": post.external_id,
+            "title": post.title or (post.caption or "")[:80],
+            "url": post.url,
+            "views_per_day": round(delta_views / hours * 24, 1),
+            "interactions_per_day": round(delta_interactions / hours * 24, 1),
+            "delta_views": delta_views,
+            "window_hours": round(hours, 1),
+            # Interactions per new view over the window: whether the post is
+            # still engaging the people it is newly reaching, or just being
+            # pushed at a colder audience.
+            "fresh_engagement": (
+                round(delta_interactions / delta_views, 5) if delta_views > 0 else None
+            ),
+        })
+    rows.sort(key=lambda r: r["views_per_day"], reverse=True)
+    return rows
+
+
+def still_climbing(velocity_rows: list[dict], lifetime_lookup=None) -> list[dict]:
+    """Posts whose current rate beats their own lifetime average.
+
+    This is the "trending now" signal a single snapshot cannot produce.
+    """
+    out = []
+    for row in velocity_rows:
+        lifetime = (lifetime_lookup or {}).get(row["external_id"])
+        if not lifetime:
+            continue
+        if row["views_per_day"] > lifetime * 1.2:
+            out.append({**row, "lifetime_per_day": round(lifetime, 1),
+                        "acceleration": round(row["views_per_day"] / lifetime, 2)})
+    return out
 
 
 def per_follower_engagement(run: ResearchRun) -> float | None:

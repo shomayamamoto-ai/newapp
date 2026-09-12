@@ -94,6 +94,10 @@ class Settings(BaseSettings):
         None, alias="SNSAUTO_RESEARCH_EXCLUDE_PATTERN"
     )
 
+    # Posting-time analysis is reported in this zone. UTC hours are not
+    # something anyone schedules against.
+    timezone: str = Field("Asia/Tokyo", alias="SNSAUTO_TIMEZONE")
+
     # Telop / frame analysis
     telop_reader: str = Field("auto", alias="SNSAUTO_TELOP_READER")  # auto|tesseract|vision|off
     telop_interval_sec: float = Field(0.8, alias="SNSAUTO_TELOP_INTERVAL")

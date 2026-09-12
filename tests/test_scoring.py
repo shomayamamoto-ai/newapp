@@ -3,6 +3,11 @@ from datetime import datetime, timedelta, timezone
 from snsauto.models import Platform
 from snsauto.platforms import PostRecord
 from snsauto.research.keyword import (
+    BASIS_INTERACTIONS,
+    BASIS_MIXED,
+    BASIS_VIEWS,
+    corpus_basis,
+    engagement_basis,
     engagement_rate,
     score_posts,
     summarize_corpus,
@@ -20,10 +25,34 @@ def test_engagement_rate_uses_all_interactions():
     assert engagement_rate(p) == 0.1
 
 
-def test_engagement_rate_handles_hidden_views():
-    """Some platforms hide view counts; interactions must still register."""
+def test_hidden_views_yield_interactions_and_say_so():
+    """Some platforms hide view counts, so there is no rate to compute.
+
+    The old code returned ``min(1.0, interactions / 1000)``, which clamped
+    every post above 1000 interactions to exactly 1.0 - the entire top of an
+    Instagram corpus tied, and ranking stopped working there. The count is
+    returned instead, and the basis says it is a count.
+    """
     p = _post(views=0, likes=200, comments=0, shares=0)
-    assert 0 < engagement_rate(p) <= 1.0
+    assert engagement_rate(p) == 200.0
+    assert engagement_basis(p) == BASIS_INTERACTIONS
+
+
+def test_big_instagram_posts_no_longer_all_tie():
+    small = _post(views=0, likes=1200, comments=0, shares=0)
+    huge = _post(views=0, likes=40000, comments=0, shares=0)
+    assert engagement_rate(huge) > engagement_rate(small)
+
+
+def test_a_corpus_with_views_is_a_rate():
+    posts = [_post(views=1000, likes=50), _post(views=2000, likes=90)]
+    assert corpus_basis(posts) == BASIS_VIEWS
+
+
+def test_a_corpus_mixing_bases_refuses_to_be_one_number():
+    """A ratio averaged with a count is not a quantity."""
+    posts = [_post(views=1000, likes=50), _post(views=0, likes=500)]
+    assert corpus_basis(posts) == BASIS_MIXED
 
 
 def test_engagement_rate_zero_when_no_signal():

@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 
 from ..models import CompetitorPost, Platform, Project, ResearchRun
 from ..platforms import PostRecord, SearchOptions, get_adapter
+from ..analytics.stats import percentile, reliability
+from .timing import describe_best, posting_time_analysis
 from .text import tokenize
 
 # Composite weights. Engagement must be strictly dominant - greater than
@@ -39,16 +41,64 @@ def _age_days(published_at: datetime | None, now: datetime | None = None) -> flo
     return max((now - published_at).total_seconds() / 86400.0, 0.5)
 
 
+# What an engagement number is divided by. Instagram's hashtag endpoints
+# return no view count, so there is nothing to divide by and the resulting
+# figure is interactions per post - a different quantity wearing the same name.
+BASIS_VIEWS = "views"
+BASIS_INTERACTIONS = "interactions"
+BASIS_MIXED = "mixed"
+
+BASIS_JA = {
+    BASIS_VIEWS: "エンゲージ率（インタラクション÷再生数）",
+    BASIS_INTERACTIONS: "インタラクション数（再生数が取得できないため率ではありません）",
+    BASIS_MIXED: "基準が混在（比較不可）",
+}
+
+
+def engagement_basis(record: PostRecord) -> str:
+    return BASIS_VIEWS if record.views > 0 else BASIS_INTERACTIONS
+
+
+def corpus_basis(records: list[PostRecord]) -> str:
+    """The basis a whole corpus shares, or `mixed` when it does not.
+
+    A mixed corpus must never be aggregated into one engagement figure: the
+    result is an average of a ratio and a count, which is not a quantity.
+    """
+    bases = {engagement_basis(r) for r in records}
+    if not bases:
+        return BASIS_VIEWS
+    return bases.pop() if len(bases) == 1 else BASIS_MIXED
+
+
 def engagement_rate(record: PostRecord) -> float:
-    """Interactions per view. Falls back to raw interactions when views are hidden."""
+    """Interactions per view.
+
+    When the platform hides views there is no rate to compute. The value
+    returned is then the raw interaction count, compressed only so that
+    scoring still works within the corpus - and ``engagement_basis`` says so,
+    so nothing downstream prints it as a percentage or compares it against a
+    real rate from another platform.
+    """
     interactions = record.likes + record.comments + record.shares
     if record.views > 0:
         return interactions / record.views
-    return 0.0 if interactions == 0 else min(1.0, interactions / 1000.0)
+    return float(interactions)
 
 
 def velocity(record: PostRecord, now: datetime | None = None) -> float:
-    """Views per day since publication - how fast the post accelerated."""
+    """Lifetime views per day.
+
+    Not acceleration, despite what a single snapshot might suggest. Views are
+    cumulative, so this is an average over the whole life of the post: a video
+    that took 900k views in its first week and 100k over the next two years
+    reports the same figure as one that trickled the whole million evenly.
+    It is still the best signal available from one observation, and it is the
+    right one for comparing posts of similar age, which a dated search returns.
+
+    ``observed_velocity`` in ``watch.py`` measures the real thing, because two
+    sweeps of the same post give an actual delta over an actual interval.
+    """
     return record.views / _age_days(record.published_at, now)
 
 
@@ -98,10 +148,12 @@ def score_posts(
     return scored
 
 
-def summarize_corpus(records: list[PostRecord], top_n: int = 10) -> dict:
+def summarize_corpus(
+    records: list[PostRecord], top_n: int = 10, timezone_name: str | None = None
+) -> dict:
     """Aggregate patterns across the corpus - the actionable half of research."""
     if not records:
-        return {"count": 0}
+        return {"count": 0, "reliability": "insufficient"}
 
     scored = score_posts(records)
     top = [r for r, _ in scored[:top_n]]
@@ -124,19 +176,37 @@ def summarize_corpus(records: list[PostRecord], top_n: int = 10) -> dict:
 
     engagements = [engagement_rate(r) for r in records]
 
+    basis = corpus_basis(records)
+    timing = posting_time_analysis(records, engagement_rate, timezone_name)
+
     return {
         "count": len(records),
+        # How much weight these aggregates can carry. A median over four posts
+        # is arithmetic, not evidence, and the reader is told which it is.
+        "reliability": reliability(len(records)),
+        "engagement_basis": basis,
+        "engagement_basis_label": BASIS_JA[basis],
+        "engagement_is_rate": basis == BASIS_VIEWS,
         "engagement": {
-            "mean": statistics.fmean(engagements),
+            # Median first: one viral post in the corpus moves the mean and
+            # not the median, and the mean is the one people quote.
             "median": statistics.median(engagements),
-            "p90": _percentile(engagements, 0.9),
+            "p25": percentile(engagements, 0.25),
+            "p75": percentile(engagements, 0.75),
+            "p90": percentile(engagements, 0.9),
+            "mean": statistics.fmean(engagements),
         },
         "duration_sec": {
             "median_all": statistics.median(durations) if durations else None,
             "median_top": statistics.median(top_durations) if top_durations else None,
             "band_top": _duration_band(top_durations),
+            "spread_top": _duration_spread(top_durations),
         },
-        "best_posting_hours_utc": [h for h, _ in Counter(hours).most_common(3)],
+        "timing": timing,
+        "timing_summary": describe_best(timing),
+        # Kept for compatibility, but it is the mode of when people post, not
+        # of when posting works - `timing` is the one to read.
+        "posting_hours_mode_utc": [h for h, _ in Counter(hours).most_common(3)],
         "top_hashtags": hashtags.most_common(15),
         "winning_words": top_words.most_common(20),
         "top_posts": [
@@ -153,28 +223,53 @@ def summarize_corpus(records: list[PostRecord], top_n: int = 10) -> dict:
     }
 
 
-def _percentile(values: list[float], q: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    idx = min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))
-    return ordered[idx]
+DURATION_BANDS = (
+    (0, 15, "0-15s"), (15, 30, "15-30s"), (30, 60, "30-60s"),
+    (60, 180, "1-3min"), (180, 600, "3-10min"), (600, None, "10min+"),
+)
+
+
+def _band_of(duration: float) -> str:
+    for lo, hi, label in DURATION_BANDS:
+        if lo <= duration and (hi is None or duration < hi):
+            return label
+    return DURATION_BANDS[-1][2]
 
 
 def _duration_band(durations: list[float]) -> str | None:
+    """The band most of the winners are in - not the band their median lands in.
+
+    Taking the median first and then banding it produces a band no post need
+    occupy: winners at 15s and 180s have a median of 97s, which reports
+    "1-3min" while half the winners are short-form. Counting posts per band
+    keeps the answer to something that actually happened.
+    """
     if not durations:
         return None
-    med = statistics.median(durations)
-    for lo, hi, label in [
-        (0, 15, "0-15s"),
-        (15, 30, "15-30s"),
-        (30, 60, "30-60s"),
-        (60, 180, "1-3min"),
-        (180, 600, "3-10min"),
-    ]:
-        if lo <= med < hi:
-            return label
-    return "10min+"
+    counts = Counter(_band_of(d) for d in durations)
+    ranked = counts.most_common()
+    top, hits = ranked[0]
+    # A plurality is not a pattern. A 5/5 split between 20-second and
+    # 5-minute winners has no single answer, and naming one of them would
+    # send half the production in the wrong direction.
+    if len(ranked) > 1:
+        if hits <= len(durations) / 2:
+            return None
+        if ranked[1][1] == hits:
+            return None
+    return top
+
+
+def _duration_spread(durations: list[float]) -> dict | None:
+    """The range the winners occupy, which a single band cannot express."""
+    if not durations:
+        return None
+    return {
+        "p25": round(percentile(durations, 0.25), 1),
+        "median": round(statistics.median(durations), 1),
+        "p75": round(percentile(durations, 0.75), 1),
+        "distribution": Counter(_band_of(d) for d in durations).most_common(),
+    }
 
 
 def extract_tags(text: str) -> list[str]:

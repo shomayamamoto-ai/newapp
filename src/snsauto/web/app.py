@@ -52,6 +52,8 @@ from ..platforms.accounts import AccountService
 from ..platforms.oauth import OAuthError, get_provider, oauth_readiness
 from ..storage import build_storage, storage_status
 from ..reporting.templates import _fmt_dt, _fmt_dur, _fmt_int, _fmt_pct
+from ..analytics.pdca import posts_needed
+from ..analytics.stats import RELIABILITY_JA
 from ..research.audio import AUDIO_STYLE_JA
 from ..research.comments import summarize_comments
 from ..research.keyword import W_ENGAGEMENT, W_REACH, W_VELOCITY, summarize_corpus
@@ -167,6 +169,11 @@ FILTER_JA = {
     "video_duration": "尺",
     "order": "並び順",
     "region": "地域",
+}
+EXCLUSION_PDCA_JA = {
+    "too_recent": "公開から24時間未満",
+    "no_metrics": "実績未収集",
+    "other_platform": "別プラットフォーム",
 }
 BAND_JA = {
     "high": "高", "medium": "中", "low": "低",
@@ -439,13 +446,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return render(
             "run.html.j2", session, request, user, nav="project", project=run.project, run=run,
-            page_title=run.keyword, posts=posts, summary=summarize_corpus(_records(run)),
+            page_title=run.keyword, posts=posts, summary=summarize_corpus(_records(run), timezone_name=settings.timezone),
             hook_distribution=hooks.most_common(), analysed=sum(hooks.values()) or 1,
             weights={"engagement": W_ENGAGEMENT, "velocity": W_VELOCITY, "reach": W_REACH},
             telop_posts=telop_posts, telop_unavailable=telop_unavailable,
             comment_summary=summarize_comments(comments),
             EXCLUSION_JA=EXCLUSION_JA, FILTER_JA=FILTER_JA, BAND_JA=BAND_JA,
             POSITION_JA=POSITION_JA, AUDIO_JA=AUDIO_STYLE_JA,
+            RELIABILITY_JA=RELIABILITY_JA,
         )
 
     @app.get("/scripts/{script_id}", response_class=HTMLResponse)
@@ -483,9 +491,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cycle = session.get(PdcaCycle, cycle_id)
         if cycle is None:
             raise HTTPException(404, "cycle not found")
+        evaluation = (cycle.result or {}).get("evaluation") or {}
         return render(
             "cycle.html.j2", session, request, user, nav="project", project=cycle.project,
             page_title=cycle.title, cycle=cycle,
+            posts_needed=posts_needed(evaluation),
+            RELIABILITY_JA=RELIABILITY_JA,
+            EXCLUSION_PDCA_JA=EXCLUSION_PDCA_JA,
         )
 
     # ---------------- reports ----------------

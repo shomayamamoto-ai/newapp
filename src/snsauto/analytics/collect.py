@@ -95,6 +95,62 @@ def growth_between(
     }
 
 
+# A post's numbers mean nothing in its first hours: views climb steeply and
+# then plateau, so a 2-hour-old post and a 2-month-old post are not the same
+# measurement. The worker's snapshot schedule tops out at 24h, which makes 24h
+# the first age at which a post can be compared to another one.
+MATURITY_HOURS = 24.0
+
+
+def metrics_at_age(publication: Publication, hours: float = MATURITY_HOURS) -> dict | None:
+    """What this post's numbers were ``hours`` after it went out.
+
+    This is the comparison that PDCA actually needs. Latest-state numbers are
+    cumulative, so a cycle's week-old posts always lose to a baseline of
+    year-old posts no matter how much better they are - the baseline simply
+    had longer to accumulate. Reading both groups at the same age removes that
+    bias entirely, and the snapshot series was already being collected for it.
+
+    Returns None when the post is not yet that old, or when no snapshot was
+    captured near that age: a missing measurement must not be substituted with
+    a later one, which would reintroduce exactly the bias this removes.
+    """
+    published = _aware(publication.published_at)
+    snapshots = sorted(publication.snapshots, key=lambda s: s.captured_at)
+    if not published or not snapshots:
+        return None
+
+    aged = [
+        (( _aware(s.captured_at) - published).total_seconds() / 3600.0, s)
+        for s in snapshots
+    ]
+    at_or_before = [(age, s) for age, s in aged if 0 <= age <= hours]
+    if not at_or_before:
+        return None
+
+    age, snapshot = max(at_or_before, key=lambda pair: pair[0])
+    # Guard against reading a 2-hour snapshot as if it were the 24-hour one.
+    # Half the window is generous enough for the worker's cadence to satisfy
+    # and tight enough that the two groups stay comparable.
+    if age < hours * 0.5:
+        return None
+
+    interactions = (
+        snapshot.likes + snapshot.comments + snapshot.shares + snapshot.saves
+    )
+    return {
+        "age_hours": round(age, 1),
+        "views": snapshot.views,
+        "likes": snapshot.likes,
+        "comments": snapshot.comments,
+        "shares": snapshot.shares,
+        "saves": snapshot.saves,
+        "engagement_rate": (
+            round(interactions / snapshot.views, 5) if snapshot.views else 0.0
+        ),
+    }
+
+
 def summarize_publication(publication: Publication) -> dict:
     """Latest state plus derived rates for one publication."""
     snapshots = sorted(publication.snapshots, key=lambda s: s.captured_at)
@@ -129,6 +185,9 @@ def summarize_publication(publication: Publication) -> dict:
         "views_per_hour": round(latest.views / age_h, 2),
         "age_hours": round(age_h, 1),
         "first_24h": growth_between(snapshots, 24.0),
+        # Age-matched numbers, so two posts of different ages can be compared.
+        "at_24h": metrics_at_age(publication, MATURITY_HOURS),
+        "mature": age_h >= MATURITY_HOURS,
     }
 
 
