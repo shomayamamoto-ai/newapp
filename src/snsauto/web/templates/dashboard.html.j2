@@ -3,6 +3,34 @@
 {% block subheading %}{{ projects | length }} プロジェクト ・ {{ totals.runs }} 調査 ・ {{ totals.renders }} 動画 ・ {{ totals.publications }} 投稿{% endblock %}
 
 {% block content %}
+{% if setup and not setup.complete %}
+<div class="setup">
+  <div class="spread">
+    <div>
+      <h2 style="margin:0">はじめに</h2>
+      <p class="sub" style="margin:2px 0 0">
+        {% if setup.next %}次にやること: <strong>{{ setup.next.label }}</strong>{% else %}準備完了です{% endif %}
+      </p>
+    </div>
+    <div class="sub">{{ setup.done }} / {{ setup.total }} 完了</div>
+  </div>
+  <div class="bar" style="margin:10px 0 14px">
+    <span style="width:{{ (setup.done / setup.total * 100) | round(0) }}%"></span>
+  </div>
+  <ol class="steps">
+    {% for step in setup.steps %}
+    <li class="{{ 'done' if step.done }}{{ ' next' if setup.next and step.key == setup.next.key }}">
+      <span class="mark">{{ '✓' if step.done else '' }}</span>
+      <div>
+        <strong>{{ step.label }}</strong>{% if step.optional %} <span class="pill mute">任意</span>{% endif %}
+        <div class="sub">{{ step.detail }}</div>
+      </div>
+      {% if not step.done and step.href %}<a class="btn ghost" href="{{ step.href }}">{{ step.action }}</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
 {% if alerts %}
 <h2 style="margin-top:0">要対応 <span class="pill bad">{{ alerts | length }}</span></h2>
 <table>

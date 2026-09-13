@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -22,20 +23,26 @@ from .platforms import capability_matrix
 from .platforms.tiktok import TikTokAdapter
 from .reporting.templates import TemplateRegistry, list_templates
 
-app = typer.Typer(help="SNS operations automation: research to PDCA, one pipeline.", no_args_is_help=True)
-project_app = typer.Typer(help="Manage projects.", no_args_is_help=True)
-research_app = typer.Typer(help="Keyword research and competitor analysis.", no_args_is_help=True)
-create_app = typer.Typer(help="Scripts, storyboards and video.", no_args_is_help=True)
-metrics_app = typer.Typer(help="Collect and inspect performance.", no_args_is_help=True)
-pdca_app = typer.Typer(help="Plan-Do-Check-Act cycles.", no_args_is_help=True)
-report_app = typer.Typer(help="HTML / PDF reports.", no_args_is_help=True)
-template_app = typer.Typer(help="HTML/CSS report templates.", no_args_is_help=True)
-footage_app = typer.Typer(help="Real / stock footage library.", no_args_is_help=True)
-worker_app = typer.Typer(help="Scheduled publishing and metrics collection.", no_args_is_help=True)
-ab_app = typer.Typer(help="A/B experiments.", no_args_is_help=True)
-user_app = typer.Typer(help="Web UI accounts.", no_args_is_help=True)
+app = typer.Typer(
+    help="SNS運用自動化ツール — 競合調査から台本・動画・投稿・PDCAまで。",
+    no_args_is_help=True,
+    # Rich's traceback is for the people who wrote this, not the people who
+    # run it. Failures are explained by `main()` below instead.
+    pretty_exceptions_enable=False,
+)
+project_app = typer.Typer(help="プロジェクト（クライアント／ブランド）の管理。", no_args_is_help=True)
+research_app = typer.Typer(help="キーワード調査と競合分析。", no_args_is_help=True)
+create_app = typer.Typer(help="台本・絵コンテ・動画の生成。", no_args_is_help=True)
+metrics_app = typer.Typer(help="実績の収集と確認。", no_args_is_help=True)
+pdca_app = typer.Typer(help="PDCAサイクルの管理。", no_args_is_help=True)
+report_app = typer.Typer(help="HTML / PDF レポートの出力。", no_args_is_help=True)
+template_app = typer.Typer(help="レポートのテンプレート管理。", no_args_is_help=True)
+footage_app = typer.Typer(help="実写・ストック素材のライブラリ。", no_args_is_help=True)
+worker_app = typer.Typer(help="予約投稿と実績収集の常駐ワーカー。", no_args_is_help=True)
+ab_app = typer.Typer(help="A/Bテスト。", no_args_is_help=True)
+user_app = typer.Typer(help="Web UI のログインユーザー管理。", no_args_is_help=True)
 workspace_app = typer.Typer(help="ワークスペースの容量確認と手動削除。", no_args_is_help=True)
-watch_app = typer.Typer(help="Watched competitors and trend diffs.", no_args_is_help=True)
+watch_app = typer.Typer(help="競合アカウントの定点ウォッチと差分。", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(research_app, name="research")
@@ -63,11 +70,17 @@ def _get_project(session, name: str) -> Project:
 
 @app.command()
 def init():
-    """Create the database and workspace directories."""
+    """データベースとワークスペースを作成する（最初に一度だけ）。"""
     settings = get_settings()
     settings.ensure_workspace()
     init_db()
-    console.print(f"[green]Initialised.[/green] workspace={settings.workspace} db={settings.db_url}")
+    console.print("[green]初期化しました。[/green]")
+    console.print(f"  ワークスペース: {settings.workspace}")
+    console.print(f"  データベース  : {settings.db_url}")
+    console.print("\n[bold]次にやること[/bold]")
+    console.print("  1. `snsauto project create <ブランド名>` でプロジェクトを作る")
+    console.print("  2. `snsauto doctor` で不足している接続情報を確認する")
+    console.print("  3. `snsauto serve` で Web UI を開く（http://127.0.0.1:8000）")
 
 
 @app.command()
@@ -76,7 +89,7 @@ def serve(
     port: int = typer.Option(8000, "--port"),
     reload: bool = typer.Option(False, "--reload"),
 ):
-    """Start the web UI."""
+    """Web UI を起動する。"""
     try:
         import uvicorn
     except ImportError as exc:
@@ -137,34 +150,85 @@ def verify(
 
 @app.command()
 def doctor():
-    """Show what this installation can actually do right now."""
+    """いま何ができて、何が足りないかを表示する。"""
+    from .errors import PLATFORM_SETUP
     from .llm import build_client
     from .media.ffmpeg import ffmpeg_path
     from .reporting.pdf import chromium_executable
+    from .workspace import warning as workspace_warning
 
     settings = get_settings()
-    table = Table(title="Platform capabilities", header_style="bold")
-    table.add_column("Platform")
-    for cap in ("search", "publish", "insights"):
-        table.add_column(cap, justify="center")
-    for platform, caps in capability_matrix(settings).items():
+    matrix = capability_matrix(settings)
+
+    table = Table(title="プラットフォーム", header_style="bold", title_justify="left")
+    table.add_column("媒体"); table.add_column("検索", justify="center")
+    table.add_column("投稿", justify="center"); table.add_column("実績", justify="center")
+    table.add_column("足りないもの", max_width=46)
+    todo: list[str] = []
+    for platform, caps in matrix.items():
+        missing = ""
+        if not any(caps[c] for c in ("search", "publish", "insights")):
+            needs, _ = PLATFORM_SETUP.get(platform, ("", ""))
+            missing = f"[yellow]{needs}[/yellow]"
+            todo.append(platform)
         table.add_row(
-            platform,
-            *["[green]yes[/green]" if caps[c] else "[dim]no[/dim]"
+            platform.upper(),
+            *["[green]可[/green]" if caps[c] else "[dim]—[/dim]"
               for c in ("search", "publish", "insights")],
+            missing,
         )
     console.print(table)
 
+    # Local tooling. Each line says what stops working without it, because
+    # "chromium: not found" does not tell anyone whether that matters.
+    console.print("\n[bold]ローカル環境[/bold]")
     try:
-        ffmpeg = ffmpeg_path()
+        console.print(f"  ffmpeg      [green]可[/green]  {Path(ffmpeg_path()).name}")
     except Exception as exc:
-        ffmpeg = f"[red]missing ({exc})[/red]"
-    console.print(f"ffmpeg   : {ffmpeg}")
-    console.print(f"chromium : {chromium_executable() or '[yellow]not found - PDF export unavailable[/yellow]'}")
-    console.print(f"LLM      : {'[green]' + settings.llm_model + '[/green]' if build_client(settings) else '[yellow]no ANTHROPIC_API_KEY - heuristic fallbacks active[/yellow]'}")
-    console.print(f"images   : {settings.imagegen_provider}")
-    console.print("\n[dim]TikTok search is never available: there is no public keyword-search API.\n"
-                  "Use `snsauto research import` with a CSV instead.[/dim]")
+        console.print(f"  ffmpeg      [red]不可[/red]  {exc}")
+        console.print("              [yellow]動画の生成とカット検出ができません[/yellow]")
+
+    chromium = chromium_executable()
+    console.print(
+        f"  Chromium    [green]可[/green]  {Path(chromium).name}" if chromium else
+        "  Chromium    [yellow]未[/yellow]  PDF出力は不可。HTMLレポートは出せます"
+    )
+
+    if build_client(settings):
+        console.print(f"  生成AI      [green]可[/green]  {settings.llm_model}")
+    else:
+        console.print("  生成AI      [yellow]未[/yellow]  ANTHROPIC_API_KEY 未設定")
+        console.print("              [yellow]台本は簡易版で生成されます（動作はします）[/yellow]")
+
+    ok, detail = _ocr_state()
+    console.print(
+        f"  テロップOCR [green]可[/green]  {detail}" if ok else
+        f"  テロップOCR [yellow]未[/yellow]  {detail or 'tesseract 未インストール'}"
+    )
+    if not ok:
+        console.print("              [yellow]apt install tesseract-ocr tesseract-ocr-jpn[/yellow]")
+
+    note = workspace_warning(settings.workspace)
+    if note:
+        console.print(f"\n[yellow]{note}[/yellow]")
+
+    console.print("\n[bold]次にやること[/bold]")
+    if todo:
+        console.print(f"  1. 未設定の媒体（{', '.join(t.upper() for t in todo)}）の接続情報を "
+                      ".env に設定するか、Web UI の /accounts から連携する")
+        console.print("  2. `snsauto verify` で実際に繋がるか確認する（読み取り専用）")
+        console.print("  3. `snsauto research run <プロジェクト> \"キーワード\"` で調査を開始する")
+    else:
+        console.print("  `snsauto verify` で実接続を確認し、`snsauto research run` から始められます。")
+
+    console.print("\n[dim]TikTok の検索は原理的に使えません（公開キーワード検索APIが"
+                  "存在しないため）。`snsauto research import` でCSVを取り込んでください。[/dim]")
+
+
+def _ocr_state() -> tuple[bool, str]:
+    from .web.app import _ocr_status
+
+    return _ocr_status()
 
 
 # ---------------- project ----------------
@@ -175,7 +239,7 @@ def project_create(
     description: str = typer.Option("", "--description", "-d"),
     brand_profile: Path = typer.Option(None, "--brand-profile", help="JSON file: tone, persona, banned words"),
 ):
-    """Create a project."""
+    """プロジェクト（クライアント／ブランド）を作る。"""
     init_db()
     profile = json.loads(brand_profile.read_text(encoding="utf-8")) if brand_profile else {}
     with session_scope() as session:
@@ -189,7 +253,7 @@ def project_create(
 
 @project_app.command("list")
 def project_list():
-    """List projects."""
+    """プロジェクト一覧。"""
     init_db()
     with session_scope() as session:
         table = Table(header_style="bold")
@@ -312,7 +376,7 @@ def watch_add(
     platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
     label: str = typer.Option(None, "--label"),
 ):
-    """Register a competitor to sweep on a schedule."""
+    """定点ウォッチする競合を登録する。"""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
@@ -325,7 +389,7 @@ def watch_add(
 
 @watch_app.command("list")
 def watch_list(project: str):
-    """Show watched competitors and when each was last swept."""
+    """ウォッチ中の競合と、最終確認日時を表示する。"""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
@@ -347,7 +411,7 @@ def watch_sweep(
     project: str,
     limit: int = typer.Option(25, "--limit", "-n"),
 ):
-    """Sweep every watched competitor and report what moved since last time."""
+    """全競合をスイープし、前回からの変化を表示する。"""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
@@ -369,7 +433,7 @@ def watch_sweep(
 
 @watch_app.command("diff")
 def watch_diff(run_a: int, run_b: int):
-    """Compare two runs of the same target."""
+    """同じ対象の2回の調査を比較する。"""
     init_db()
     with session_scope() as session:
         first = session.get(ResearchRun, run_a)
@@ -406,7 +470,7 @@ def research_run(
     order: str = typer.Option(None, "--order", help="relevance | date | views"),
     comments: bool = typer.Option(False, "--comments", help="Also pull comment text on the top posts"),
 ):
-    """Collect and rank the top N competing posts for a keyword."""
+    """キーワードの上位N件を集めて順位付けする。"""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
@@ -455,7 +519,7 @@ def research_import(
     csv_path: Path,
     platform: Platform = typer.Option(Platform.TIKTOK, "--platform", "-p"),
 ):
-    """Import competitor posts from a CSV (for platforms with no search API)."""
+    """CSVから競合投稿を取り込む（検索APIが無い媒体向け）。"""
     init_db()
     records = TikTokAdapter.ingest_manual(csv_path)
     for r in records:
@@ -503,7 +567,7 @@ def research_comments(
     run_id: int,
     top_n: int = typer.Option(10, "--top", help="Mine this many top posts"),
 ):
-    """Pull comment text for a run's top posts and summarise what people ask."""
+    """上位投稿のコメント本文を取得し、何を聞かれているかを集計する。"""
     init_db()
     with session_scope() as session:
         run = session.get(ResearchRun, run_id)
@@ -558,7 +622,7 @@ def create_all(
     live: bool = typer.Option(False, "--live", help="Actually publish (default is dry run)"),
     csv_path: Path = typer.Option(None, "--csv", help="Use a CSV instead of the search API"),
 ):
-    """Run the whole chain: research to video to report."""
+    """調査から動画・レポートまで一気に実行する。"""
     init_db()
     get_settings().ensure_workspace()
     records = None
@@ -584,7 +648,7 @@ def create_script(
     duration: float = typer.Option(30.0, "--duration", "-d"),
     run_id: int = typer.Option(None, "--run", help="Base the script on this research run"),
 ):
-    """Write a script (台本)."""
+    """台本を書く。"""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
@@ -613,7 +677,7 @@ def create_video(
     ),
     narrate: bool = typer.Option(False, "--narrate", help="Synthesise narration"),
 ):
-    """Storyboard, source visuals, and render the video (ワンタッチ編集)."""
+    """絵コンテ・素材・書き出しまで一括で行う（ワンタッチ編集）。"""
     init_db()
     get_settings().ensure_workspace()
     with session_scope() as session:
@@ -656,7 +720,7 @@ def create_video(
 
 @metrics_app.command("collect")
 def metrics_collect(project: str = typer.Option(None, "--project", "-p")):
-    """Poll every platform and append a metrics snapshot."""
+    """各媒体の実績を取得してスナップショットを追加する。"""
     init_db()
     with session_scope() as session:
         project_id = _get_project(session, project).id if project else None
@@ -675,7 +739,7 @@ def pdca_plan(
     target: float = typer.Option(..., "--target"),
     action: list[str] = typer.Option([], "--action", "-a"),
 ):
-    """Open a PDCA cycle."""
+    """PDCAサイクルを開始する（Plan）。"""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
@@ -687,7 +751,7 @@ def pdca_plan(
 
 @pdca_app.command("attach")
 def pdca_attach(cycle_id: int, publication_ids: list[int]):
-    """Attach publications to a cycle (the Do stage)."""
+    """サイクルに投稿を紐づける（Do）。"""
     init_db()
     with session_scope() as session:
         cycle = session.get(PdcaCycle, cycle_id)
@@ -697,7 +761,7 @@ def pdca_attach(cycle_id: int, publication_ids: list[int]):
 
 @pdca_app.command("review")
 def pdca_review(cycle_id: int):
-    """Check the result and decide next actions (Check + Act)."""
+    """結果を判定し、次のアクションを決める（Check + Act）。"""
     init_db()
     with session_scope() as session:
         cycle = session.get(PdcaCycle, cycle_id)
@@ -717,7 +781,7 @@ def pdca_review(cycle_id: int):
 
 @report_app.command("research")
 def report_research(run_id: int, no_pdf: bool = typer.Option(False, "--no-pdf")):
-    """Render a research report."""
+    """調査レポートを出力する。"""
     init_db()
     with session_scope() as session:
         run = session.get(ResearchRun, run_id)
@@ -729,7 +793,7 @@ def report_research(run_id: int, no_pdf: bool = typer.Option(False, "--no-pdf"))
 
 @report_app.command("performance")
 def report_performance(project: str, no_pdf: bool = typer.Option(False, "--no-pdf")):
-    """Render a performance report."""
+    """実績レポートを出力する。"""
     init_db()
     with session_scope() as session:
         proj = _get_project(session, project)
@@ -739,7 +803,7 @@ def report_performance(project: str, no_pdf: bool = typer.Option(False, "--no-pd
 
 @report_app.command("pdca")
 def report_pdca(cycle_id: int, no_pdf: bool = typer.Option(False, "--no-pdf")):
-    """Render a PDCA report."""
+    """PDCAレポートを出力する。"""
     init_db()
     with session_scope() as session:
         cycle = session.get(PdcaCycle, cycle_id)
@@ -761,7 +825,7 @@ def _print_report(report):
 
 @template_app.command("list")
 def template_list():
-    """List report templates and whether they are overridden."""
+    """レポートのテンプレート一覧と、上書きの有無を表示する。"""
     table = Table(header_style="bold")
     table.add_column("template")
     table.add_column("source")
@@ -773,7 +837,7 @@ def template_list():
 
 @template_app.command("eject")
 def template_eject(name: str):
-    """Copy a built-in template out so you can restyle it."""
+    """組み込みテンプレートを取り出して、デザインを差し替えられるようにする。"""
     dest = TemplateRegistry().eject(name)
     console.print(f"[green]Ejected[/green] {name} -> {dest}")
 
@@ -788,7 +852,7 @@ if __name__ == "__main__":
 def footage_index(
     directory: Path = typer.Argument(None, help="Defaults to SNSAUTO_FOOTAGE_DIR"),
 ):
-    """Index a folder of clips so shots can be matched to real footage."""
+    """実写素材のフォルダを索引化し、カットに割り当てられるようにする。"""
     init_db()
     from .creative.footage import FootageLibrary
 
@@ -808,7 +872,7 @@ def footage_index(
 
 @footage_app.command("list")
 def footage_list():
-    """Show the indexed footage library."""
+    """索引済みの素材ライブラリを表示する。"""
     init_db()
     from .models import ClipAsset
 
@@ -832,7 +896,7 @@ def worker_run(
     interval: float = typer.Option(None, "--interval", help="Seconds between ticks"),
     once: bool = typer.Option(False, "--once", help="Run a single tick and exit"),
 ):
-    """Publish scheduled posts and collect metrics on a loop."""
+    """予約投稿の実行と実績収集を繰り返す（常駐）。"""
     init_db()
     import logging
 
@@ -854,7 +918,7 @@ def worker_run(
 
 @worker_app.command("jobs")
 def worker_jobs(limit: int = typer.Option(5, "--limit")):
-    """Run queued web jobs (useful when the UI runs behind a process manager)."""
+    """Web UI から積まれたジョブを処理する（プロセス管理下で運用する場合）。"""
     init_db()
     from .db import get_engine
     from .scheduling.jobs import JobRunner
@@ -875,7 +939,7 @@ def ab_create(
     arms: int = typer.Option(2, "--arms", "-n"),
     name: str = typer.Option(None, "--name"),
 ):
-    """Create an A/B experiment from a base script."""
+    """台本をもとにA/Bテストを作成する。"""
     init_db()
     from .experiments import DIMENSIONS, ExperimentService
     from .llm import build_client
@@ -906,7 +970,7 @@ def ab_create(
 
 @ab_app.command("attach")
 def ab_attach(experiment_id: int, label: str, publication_ids: list[int]):
-    """Attach publications to one arm."""
+    """片方の群に投稿を紐づける。"""
     init_db()
     from .experiments import ExperimentService
 
@@ -925,7 +989,7 @@ def ab_attach(experiment_id: int, label: str, publication_ids: list[int]):
 
 @ab_app.command("review")
 def ab_review(experiment_id: int):
-    """Measure the arms and declare a winner - or say why there isn't one."""
+    """両群を比較して勝者を判定する（判定できない場合はその理由を出す）。"""
     init_db()
     from .experiments import ExperimentService
 
@@ -950,7 +1014,7 @@ def user_create(
     name: str = typer.Option(None, "--name"),
     role: str = typer.Option("editor", "--role", help="admin | editor | viewer"),
 ):
-    """Create a web UI account."""
+    """Web UI のログインユーザーを作る。"""
     init_db()
     from .web.auth import AuthError, create_user
 
@@ -964,7 +1028,7 @@ def user_create(
 
 @user_app.command("list")
 def user_list():
-    """List web UI accounts."""
+    """Web UI のログインユーザー一覧。"""
     init_db()
     with session_scope() as session:
         table = Table(header_style="bold")
@@ -981,7 +1045,7 @@ def user_list():
 
 @user_app.command("secret")
 def user_secret():
-    """Generate a signing key for SNSAUTO_SECRET_KEY."""
+    """SNSAUTO_SECRET_KEY 用の署名鍵を生成する。"""
     import secrets
 
     console.print(secrets.token_urlsafe(48))
@@ -995,7 +1059,7 @@ app.add_typer(db_app, name="db")
 
 @db_app.command("upgrade")
 def db_upgrade(revision: str = typer.Argument("head")):
-    """Apply migrations."""
+    """データベースのマイグレーションを適用する。"""
     from alembic import command
 
     from .db import _alembic_config
@@ -1006,7 +1070,7 @@ def db_upgrade(revision: str = typer.Argument("head")):
 
 @db_app.command("current")
 def db_current():
-    """Show the applied revision."""
+    """適用済みのリビジョンを表示する。"""
     from alembic import command
 
     from .db import _alembic_config
@@ -1016,7 +1080,7 @@ def db_current():
 
 @db_app.command("revision")
 def db_revision(message: str = typer.Option(..., "--message", "-m")):
-    """Autogenerate a migration from model changes."""
+    """モデルの変更からマイグレーションを自動生成する。"""
     from alembic import command
 
     from .db import _alembic_config
@@ -1032,7 +1096,7 @@ app.add_typer(account_app, name="account")
 
 @account_app.command("list")
 def account_list():
-    """Show connected accounts and how long their tokens last."""
+    """連携済みアカウントと、トークンの残り期間を表示する。"""
     init_db()
     from .models import SocialAccount
     from .platforms.accounts import AccountService
@@ -1073,10 +1137,10 @@ def account_list():
 
 @account_app.command("connect-url")
 def account_connect_url(platform: Platform):
-    """Print the authorization URL to open in a browser.
+    """ブラウザで開く連携用URLを表示する。
 
-    Useful when the web UI is not reachable yet; finish the flow by visiting
-    the URL and letting the callback land on this install.
+    Web UI にまだ到達できない場合に使います。表示されたURLを開いて認可すると、
+    コールバックがこのインストールに戻ってきて連携が完了します。
     """
     from .platforms.oauth import OAuthError, get_provider
 
@@ -1090,7 +1154,7 @@ def account_connect_url(platform: Platform):
 
 @account_app.command("refresh")
 def account_refresh(account_id: int = typer.Argument(None, help="Omit to refresh all due")):
-    """Refresh access tokens that are close to expiring."""
+    """期限が近いアクセストークンを更新する。"""
     init_db()
     from .models import SocialAccount
     from .platforms.accounts import AccountService
@@ -1114,7 +1178,7 @@ def account_refresh(account_id: int = typer.Argument(None, help="Omit to refresh
 
 @account_app.command("limits")
 def account_limits():
-    """Show how much of each platform's posting allowance is used."""
+    """各媒体の投稿枠をどれだけ使ったかを表示する。"""
     init_db()
     from .platforms.accounts import AccountService
 
@@ -1140,3 +1204,36 @@ def account_limits():
             "`snsauto account limits --live` is not needed because the adapter "
             "queries it at publish time.[/dim]"
         )
+
+
+def main() -> None:
+    """Entry point. Explains failures instead of printing a traceback.
+
+    `--debug` anywhere on the command line re-raises, so the full trace is
+    still one flag away when it is actually wanted.
+    """
+    import sys
+
+    from .errors import explain
+
+    debug = "--debug" in sys.argv
+    if debug:
+        sys.argv = [a for a in sys.argv if a != "--debug"]
+    try:
+        app()
+    except (typer.Exit, typer.Abort, SystemExit, click.exceptions.ClickException):
+        raise
+    except BaseException as exc:  # noqa: BLE001 - this is the boundary
+        if debug:
+            raise
+        explained = explain(exc)
+        if isinstance(exc, KeyboardInterrupt):
+            console.print("\n[dim]中断しました。[/dim]")
+            raise SystemExit(130) from None
+        console.print(f"\n[red]{explained.title}[/red]")
+        if explained.detail:
+            console.print(f"  {explained.detail}")
+        if explained.fix:
+            for line in explained.fix.split("\n"):
+                console.print(f"  [yellow]{line}[/yellow]" if line.strip() else "")
+        raise SystemExit(1) from None

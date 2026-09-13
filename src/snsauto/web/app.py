@@ -310,9 +310,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.scalars(select(ResearchRun).order_by(ResearchRun.id.desc()).limit(8))
         )
         alerts = AlertService(session, settings).open_alerts()
+        from ..setup_state import checklist, progress
+
         return render(
             "dashboard.html.j2", session, request, user, nav="dashboard", page_title="ダッシュボード",
             projects=rows, totals=totals, recent_runs=recent, alerts=alerts,
+            setup=progress(checklist(session, settings)),
         )
 
     @app.get("/capabilities", response_class=HTMLResponse)

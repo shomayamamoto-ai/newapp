@@ -17,21 +17,28 @@ research ─▶ structure ─▶ script ─▶ storyboard ─▶ narration ─�
 ## クイックスタート
 
 ```bash
-pip install -e ".[llm,pdf]"
-cp .env.example .env          # 認証情報を記入（無くても動きます）
-
-snsauto init                  # DBとワークスペースを作成
-snsauto doctor                # 今このインストールで何ができるかを表示
-snsauto project create mybrand --description "副業系ショート動画"
-
-# 全工程を一括実行（--live を付けるまで投稿はドライラン）
-snsauto create all mybrand "副業の始め方" --platform youtube --duration 24
+pip install -e ".[llm,web,pdf,storage]"
+snsauto init                       # 最初に一度だけ
+snsauto project create ブランド名
+snsauto doctor                     # 何が足りないかと、次にやることを表示
+snsauto serve                      # http://127.0.0.1:8000
 ```
 
-`create all` は競合分析→台本→絵コンテ→画像→動画→レポートまでを実行し、
-成果物のパスをJSONで返します。
+`snsauto init` と `snsauto doctor` は、いずれも最後に**次にやること**を出します。
+Web UI のダッシュボードにも同じ手順がチェックリストで出るので、どちらから始めても
+迷いません。
 
----
+**接続情報が無い状態でもエラーで止まりません。** 何が足りず、どう設定すればよいかを
+日本語で表示します。
+
+```
+YOUTUBE の接続情報がありません
+  投稿と視聴維持率は /accounts からの連携が必要です。
+  YOUTUBE_API_KEY（検索・コメント取得用。Google Cloud コンソールで発行）を設定してください。
+    設定例は .env.example にあります。現在の状態は `snsauto doctor` で確認できます。
+```
+
+技術的な詳細が必要なときは `--debug` を付けると、従来どおりのスタックトレースが出ます。
 
 ## 認証情報が無くても動く範囲
 
