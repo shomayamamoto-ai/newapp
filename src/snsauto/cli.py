@@ -64,7 +64,7 @@ console = Console()
 def _get_project(session, name: str) -> Project:
     project = session.query(Project).filter_by(name=name).one_or_none()
     if project is None:
-        raise typer.BadParameter(f"no project named {name!r}. Run: snsauto project create {name}")
+        raise typer.BadParameter(f"「{name}」というプロジェクトがありません。`snsauto project create {name}` で作成してください")
     return project
 
 
@@ -94,13 +94,13 @@ def serve(
         import uvicorn
     except ImportError as exc:
         raise typer.BadParameter(
-            "web extra not installed. Run: pip install 'snsauto[web]'"
+            "Web UI の依存関係が未インストールです。`pip install 'snsauto[web]'` を実行してください"
         ) from exc
 
     settings = get_settings()
     settings.ensure_workspace()
     init_db()
-    console.print(f"[green]snsauto[/green] http://{host}:{port}")
+    console.print(f"[green]起動しました:[/green] http://{host}:{port}")
     uvicorn.run(
         "snsauto.web.app:create_app",
         host=host, port=port, reload=reload, factory=True,
@@ -244,11 +244,11 @@ def project_create(
     profile = json.loads(brand_profile.read_text(encoding="utf-8")) if brand_profile else {}
     with session_scope() as session:
         if session.query(Project).filter_by(name=name).one_or_none():
-            raise typer.BadParameter(f"project {name!r} already exists")
+            raise typer.BadParameter(f"プロジェクト「{name}」は既に存在します")
         project = Project(name=name, description=description, brand_profile=profile)
         session.add(project)
         session.flush()
-        console.print(f"[green]Created project[/green] {project.name} (id={project.id})")
+        console.print(f"[green]プロジェクトを作成しました:[/green] {project.name}（id={project.id}）")
 
 
 @project_app.command("list")
@@ -278,7 +278,7 @@ def metrics_retention(publication_id: int):
     with session_scope() as session:
         publication = session.get(Publication, publication_id)
         if publication is None:
-            raise typer.BadParameter(f"publication {publication_id} not found")
+            raise typer.BadParameter(f"投稿ID {publication_id} が見つかりません")
         report = retention_report(publication)
         if not report.get("measured"):
             console.print(f"[yellow]{report['reason']}[/yellow]")
@@ -382,8 +382,8 @@ def watch_add(
         proj = _get_project(session, project)
         account = Pipeline(session).watch.add(proj, platform, handle, label)
         console.print(
-            f"[green]Watching[/green] {account.display} on {platform.value} "
-            f"(id={account.id})"
+            f"[green]定点ウォッチに追加しました:[/green] {account.display}"
+            f"（{platform.value} / id={account.id}）"
         )
 
 
@@ -416,7 +416,7 @@ def watch_sweep(
     with session_scope() as session:
         proj = _get_project(session, project)
         outcome = Pipeline(session).sweep_competitors(proj, limit=limit)
-        console.print(f"[green]Swept[/green] {len(outcome['runs'])} competitors")
+        console.print(f"[green]{len(outcome['runs'])}件の競合をスイープしました[/green]")
         for name, reason in (outcome.get("failed") or {}).items():
             console.print(f"  [yellow]{name}[/yellow]: {reason}")
         for name, trend in (outcome.get("trends") or {}).items():
@@ -439,7 +439,7 @@ def watch_diff(run_a: int, run_b: int):
         first = session.get(ResearchRun, run_a)
         second = session.get(ResearchRun, run_b)
         if not first or not second:
-            raise typer.BadParameter("run not found")
+            raise typer.BadParameter("調査が見つかりません")
         result = diff_runs(first, second)
         if not result.get("comparable"):
             console.print(f"[yellow]{result.get('reason')}[/yellow]")
@@ -485,14 +485,14 @@ def research_run(
 
         run = pipeline.research.run(proj, keyword, platform, limit=limit,
                                     options=options)
-        console.print(f"[green]Collected[/green] {len(run.posts)} posts (run id={run.id})")
+        console.print(f"[green]{len(run.posts)}件を取得しました[/green]（調査ID={run.id}）")
         _print_filters(run)
         if analyze:
             n = pipeline.analyze_structures(run)
-            console.print(f"Analysed structure of top {n} posts")
+            console.print(f"上位{n}件の構成を分析しました")
         if comments:
             mined = pipeline.mine_comments(run)
-            console.print(f"Mined {mined} comments")
+            console.print(f"コメントを{mined}件取得しました")
         _print_top(run)
 
 
@@ -502,14 +502,14 @@ def _print_filters(run: ResearchRun) -> None:
     ignored = filters.get("ignored") or {}
     dropped = filters.get("dropped") or {}
     if filters.get("applied"):
-        console.print(f"[dim]Applied: {filters['applied']}[/dim]")
+        console.print(f"[dim]適用した絞り込み: {filters['applied']}[/dim]")
     if ignored:
         console.print(
-            f"[yellow]{run.platform.value} ignored:[/yellow] {ignored} "
-            "[dim](its API cannot express these)[/dim]"
+            f"[yellow]{run.platform.value} で無視した条件:[/yellow] {ignored} "
+            "[dim]（このAPIでは指定できない条件です）[/dim]"
         )
     if dropped:
-        console.print(f"[dim]Excluded {sum(dropped.values())} posts: {dropped}[/dim]")
+        console.print(f"[dim]除外 {sum(dropped.values())}件: {dropped}[/dim]")
 
 
 @research_app.command("import")
@@ -529,7 +529,7 @@ def research_import(
         run = Pipeline(session).collect_research(
             proj, keyword, platform, len(records), records=records
         )
-        console.print(f"[green]Imported[/green] {len(run.posts)} posts (run id={run.id})")
+        console.print(f"[green]{len(run.posts)}件を取り込みました[/green]（調査ID={run.id}）")
         _print_top(run)
 
 
@@ -543,7 +543,7 @@ def research_audio(
     with session_scope() as session:
         run = session.get(ResearchRun, run_id)
         if not run:
-            raise typer.BadParameter(f"run {run_id} not found")
+            raise typer.BadParameter(f"調査ID {run_id} が見つかりません")
         result = Pipeline(session).analyze_shared_audio(run, top_n=top_n)
         if not result.get("usable"):
             console.print(f"[yellow]{result.get('reason')}[/yellow]")
@@ -572,12 +572,12 @@ def research_comments(
     with session_scope() as session:
         run = session.get(ResearchRun, run_id)
         if not run:
-            raise typer.BadParameter(f"run {run_id} not found")
+            raise typer.BadParameter(f"調査ID {run_id} が見つかりません")
         added = Pipeline(session).comments.mine_run(run, top_n=top_n)
         comments = [c for p in run.posts for c in p.comments_mined]
         summary = summarize_comments(comments)
-        console.print(f"[green]Mined[/green] {added} new comments "
-                      f"({summary.get('count', 0)} total)")
+        console.print(f"[green]新規コメントを{added}件取得しました[/green] "
+                      f"（累計 {summary.get('count', 0)}件）")
         if not summary.get("count"):
             console.print(
                 "[dim]このランのプラットフォームではコメント本文を取得できません"
@@ -654,7 +654,7 @@ def create_script(
         proj = _get_project(session, project)
         run = session.get(ResearchRun, run_id) if run_id else None
         script = Pipeline(session).write_script(proj, keyword, platform, duration, run)
-        console.print(f"[green]Script {script.id}[/green]: {script.title}")
+        console.print(f"[green]台本 {script.id}[/green]: {script.title}")
         table = Table(header_style="bold")
         table.add_column("#", justify="right")
         table.add_column("time")
@@ -683,25 +683,25 @@ def create_video(
     with session_scope() as session:
         script = session.get(Script, script_id)
         if script is None:
-            raise typer.BadParameter(f"no script with id {script_id}")
+            raise typer.BadParameter(f"台本ID {script_id} が見つかりません")
         pipeline = Pipeline(session)
         board = pipeline.draw_storyboard(script, style_hint=style)
-        console.print(f"Storyboard {board.id}: {len(board.shots)} shots")
+        console.print(f"絵コンテ {board.id}: {len(board.shots)}カット")
 
         voice_path = None
         if narrate:
             track = pipeline.narrate(board)
             voice_path = track.path
             console.print(
-                f"Narration: {'synthesised' if track.synthesized else 'estimated timings only'}"
+                f"ナレーション: {'音声を合成しました' if track.synthesized else '尺の推定のみ（音声なし）'}"
                 f" ({track.total_duration:.1f}s)"
             )
 
         visuals = pipeline.generate_visuals(board, visual_mode)
-        console.print(f"Visuals: {visuals.counts}")
+        console.print(f"素材: {visuals.counts}")
         for degraded in visuals.degraded:
             console.print(
-                f"  [yellow]shot {degraded.shot_index}[/yellow] fell back to "
+                f"  [yellow]カット {degraded.shot_index}[/yellow] は次の方法に切り替えました: "
                 f"{degraded.mode.value}: {degraded.note}"
             )
 
@@ -710,9 +710,9 @@ def create_video(
             visual_summary=visuals.summary(),
         )
         console.print(
-            f"[green]Rendered[/green] {render.path} "
-            f"({render.duration_sec:.1f}s, {render.width}x{render.height}, "
-            f"{render.meta.get('telop_cues')} telop cues)"
+            f"[green]書き出しました:[/green] {render.path} "
+            f"（{render.duration_sec:.1f}秒 / {render.width}x{render.height} / "
+            f"テロップ {render.meta.get('telop_cues')}箇所）"
         )
 
 
@@ -725,7 +725,7 @@ def metrics_collect(project: str = typer.Option(None, "--project", "-p")):
     with session_scope() as session:
         project_id = _get_project(session, project).id if project else None
         snapshots = Pipeline(session).metrics.collect_all(project_id)
-        console.print(f"[green]Collected[/green] {len(snapshots)} snapshots")
+        console.print(f"[green]実績を{len(snapshots)}件取得しました[/green]")
 
 
 # ---------------- pdca ----------------
@@ -746,7 +746,7 @@ def pdca_plan(
         cycle = Pipeline(session).pdca.plan(
             proj, title, hypothesis, {"metric": metric, "target": target}, list(action)
         )
-        console.print(f"[green]Cycle {cycle.id}[/green] planned. baseline={cycle.target.get('baseline')}")
+        console.print(f"[green]PDCAサイクル {cycle.id} を作成しました[/green]（ベースライン={cycle.target.get('baseline')}）")
 
 
 @pdca_app.command("attach")
@@ -756,7 +756,7 @@ def pdca_attach(cycle_id: int, publication_ids: list[int]):
     with session_scope() as session:
         cycle = session.get(PdcaCycle, cycle_id)
         Pipeline(session).pdca.do(cycle, list(publication_ids))
-        console.print(f"Cycle {cycle.id}: {len(cycle.publication_ids)} publications attached")
+        console.print(f"サイクル {cycle.id}: 投稿を{len(cycle.publication_ids)}件紐づけました")
 
 
 @pdca_app.command("review")
@@ -766,7 +766,7 @@ def pdca_review(cycle_id: int):
     with session_scope() as session:
         cycle = session.get(PdcaCycle, cycle_id)
         if cycle is None:
-            raise typer.BadParameter(f"no cycle with id {cycle_id}")
+            raise typer.BadParameter(f"PDCAサイクルID {cycle_id} が見つかりません")
         Pipeline(session).pdca.run_check_act(cycle)
         console.print(f"[bold]{cycle.title}[/bold] -> [green]{cycle.verdict}[/green]")
         console.print(cycle.learnings or "")
@@ -786,7 +786,7 @@ def report_research(run_id: int, no_pdf: bool = typer.Option(False, "--no-pdf"))
     with session_scope() as session:
         run = session.get(ResearchRun, run_id)
         if run is None:
-            raise typer.BadParameter(f"no run with id {run_id}")
+            raise typer.BadParameter(f"調査ID {run_id} が見つかりません")
         report = Pipeline(session).reports.research_report(run, pdf=not no_pdf)
         _print_report(report)
 
@@ -808,17 +808,17 @@ def report_pdca(cycle_id: int, no_pdf: bool = typer.Option(False, "--no-pdf")):
     with session_scope() as session:
         cycle = session.get(PdcaCycle, cycle_id)
         if cycle is None:
-            raise typer.BadParameter(f"no cycle with id {cycle_id}")
+            raise typer.BadParameter(f"PDCAサイクルID {cycle_id} が見つかりません")
         report = Pipeline(session).reports.pdca_report(cycle, pdf=not no_pdf)
         _print_report(report)
 
 
 def _print_report(report):
-    console.print(f"[green]HTML[/green] {report.html_path}")
+    console.print(f"[green]HTML:[/green] {report.html_path}")
     if report.pdf_path:
-        console.print(f"[green]PDF [/green] {report.pdf_path}")
+        console.print(f"[green]PDF :[/green] {report.pdf_path}")
     elif (report.context or {}).get("pdf_error"):
-        console.print(f"[yellow]PDF skipped:[/yellow] {report.context['pdf_error']}")
+        console.print(f"[yellow]PDF出力をスキップしました:[/yellow] {report.context['pdf_error']}")
 
 
 # ---------------- templates ----------------
@@ -832,14 +832,14 @@ def template_list():
     for row in list_templates():
         table.add_row(row["name"], "[green]user override[/green]" if row["overridden"] else "built-in")
     console.print(table)
-    console.print(f"[dim]User templates: {TemplateRegistry().user_dir}[/dim]")
+    console.print(f"[dim]ユーザーテンプレート: {TemplateRegistry().user_dir}[/dim]")
 
 
 @template_app.command("eject")
 def template_eject(name: str):
     """組み込みテンプレートを取り出して、デザインを差し替えられるようにする。"""
     dest = TemplateRegistry().eject(name)
-    console.print(f"[green]Ejected[/green] {name} -> {dest}")
+    console.print(f"[green]テンプレートを取り出しました:[/green] {name} → {dest}")
 
 
 if __name__ == "__main__":
@@ -858,7 +858,7 @@ def footage_index(
 
     with session_scope() as session:
         assets = FootageLibrary(session).index(directory)
-        console.print(f"[green]Indexed[/green] {len(assets)} clips")
+        console.print(f"[green]素材を{len(assets)}件索引しました[/green]")
         table = Table(header_style="bold")
         table.add_column("file"); table.add_column("dur", justify="right")
         table.add_column("size"); table.add_column("keywords")
@@ -912,7 +912,7 @@ def worker_run(
     if once:
         console.print_json(json.dumps(worker.tick(), default=str))
         return
-    console.print(f"[green]worker[/green] {worker.identity} started")
+    console.print(f"[green]ワーカー[/green] {worker.identity} を開始しました")
     worker.run(interval)
 
 
@@ -945,17 +945,17 @@ def ab_create(
     from .llm import build_client
 
     if dimension not in DIMENSIONS:
-        raise typer.BadParameter(f"choose from {sorted(DIMENSIONS)}")
+        raise typer.BadParameter(f"次のいずれかを指定してください: {sorted(DIMENSIONS)}")
 
     with session_scope() as session:
         proj = _get_project(session, project)
         base = session.get(Script, script_id)
         if base is None:
-            raise typer.BadParameter(f"no script with id {script_id}")
+            raise typer.BadParameter(f"台本ID {script_id} が見つかりません")
         experiment = ExperimentService(session, build_client()).create(
             proj, name or f"{base.title} A/B", base, dimension, arms
         )
-        console.print(f"[green]Experiment {experiment.id}[/green]: {experiment.name}")
+        console.print(f"[green]A/Bテスト {experiment.id} を作成しました[/green]: {experiment.name}")
         table = Table(header_style="bold")
         table.add_column("arm"); table.add_column("script", justify="right")
         table.add_column("treatment")
@@ -977,14 +977,14 @@ def ab_attach(experiment_id: int, label: str, publication_ids: list[int]):
     with session_scope() as session:
         experiment = session.get(Experiment, experiment_id)
         if experiment is None:
-            raise typer.BadParameter(f"no experiment with id {experiment_id}")
+            raise typer.BadParameter(f"A/BテストID {experiment_id} が見つかりません")
         variant = next(
             (v for v in experiment.variants if v.label.upper() == label.upper()), None
         )
         if variant is None:
-            raise typer.BadParameter(f"no arm {label!r}")
+            raise typer.BadParameter(f"群「{label}」が見つかりません")
         ExperimentService(session).attach(variant, list(publication_ids))
-        console.print(f"arm {variant.label}: {len(variant.publication_ids)} publications")
+        console.print(f"群 {variant.label}: 投稿{len(variant.publication_ids)}件")
 
 
 @ab_app.command("review")
@@ -996,7 +996,7 @@ def ab_review(experiment_id: int):
     with session_scope() as session:
         experiment = session.get(Experiment, experiment_id)
         if experiment is None:
-            raise typer.BadParameter(f"no experiment with id {experiment_id}")
+            raise typer.BadParameter(f"A/BテストID {experiment_id} が見つかりません")
         service = ExperimentService(session)
         service.evaluate(experiment)
         conclusion = experiment.conclusion or {}
@@ -1023,7 +1023,7 @@ def user_create(
             user = create_user(session, email, password, name, role)
         except AuthError as exc:
             raise typer.BadParameter(str(exc)) from exc
-        console.print(f"[green]Created[/green] {user.email} ({user.role})")
+        console.print(f"[green]ユーザーを作成しました:[/green] {user.email}（{user.role}）")
 
 
 @user_app.command("list")
@@ -1065,7 +1065,7 @@ def db_upgrade(revision: str = typer.Argument("head")):
     from .db import _alembic_config
 
     command.upgrade(_alembic_config(), revision)
-    console.print(f"[green]Upgraded[/green] to {revision}")
+    console.print(f"[green]{revision} まで適用しました[/green]")
 
 
 @db_app.command("current")
@@ -1113,7 +1113,7 @@ def account_list():
 
         accounts = session.query(SocialAccount).order_by(SocialAccount.id).all()
         if not accounts:
-            console.print("[yellow]No connected accounts.[/yellow] "
+            console.print("[yellow]連携済みのアカウントがありません。[/yellow] "
                           "Connect them from the web UI: /accounts")
             return
         for account in accounts:
@@ -1149,7 +1149,7 @@ def account_connect_url(platform: Platform):
     except OAuthError as exc:
         raise typer.BadParameter(str(exc)) from exc
     console.print(start.url)
-    console.print(f"[dim]state: {start.state}[/dim]")
+    console.print(f"[dim]state（照合用の文字列）: {start.state}[/dim]")
 
 
 @account_app.command("refresh")
@@ -1165,10 +1165,10 @@ def account_refresh(account_id: int = typer.Argument(None, help="Omit to refresh
         if account_id:
             account = session.get(SocialAccount, account_id)
             if account is None:
-                raise typer.BadParameter(f"no account with id {account_id}")
+                raise typer.BadParameter(f"アカウントID {account_id} が見つかりません")
             try:
                 service.refresh(account)
-                console.print(f"[green]Refreshed[/green] until {account.expires_at}")
+                console.print(f"[green]更新しました[/green]（有効期限 {account.expires_at}）")
             except OAuthError as exc:
                 raise typer.BadParameter(str(exc)) from exc
             return
@@ -1200,9 +1200,8 @@ def account_limits():
             )
         console.print(table)
         console.print(
-            "[dim]Instagram reports its own remaining quota; "
-            "`snsauto account limits --live` is not needed because the adapter "
-            "queries it at publish time.[/dim]"
+            "[dim]Instagram は自身の残り枠を返します。"
+            "投稿時にアダプタが毎回問い合わせるため、別途の確認コマンドは不要です。[/dim]"
         )
 
 
