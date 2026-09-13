@@ -132,3 +132,46 @@ class TestSetupChecklist:
             assert step.label and JAPANESE.search(step.label)
             if not step.done:
                 assert step.detail, f"{step.key} has no guidance"
+
+
+class TestTheModuleFormIsTheWholeCli:
+    """`python -m snsauto.cli` has to be the same tool as `snsauto`.
+
+    It was not: a stray `if __name__ == "__main__": app()` sat two thirds of
+    the way down the file, so the module form ran before the later command
+    groups had been registered and silently offered a truncated CLI. It also
+    called `app()` rather than `main()`, losing the error explanations.
+    """
+
+    def test_the_entry_guard_is_the_last_thing_in_the_file(self):
+        body = CLI.read_text(encoding="utf-8")
+        assert body.count('if __name__ == "__main__":') == 1
+        assert body.rstrip().endswith('if __name__ == "__main__":\n    main()')
+
+    def test_it_exposes_every_command_group(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "snsauto.cli", "--help"],
+            capture_output=True, text=True,
+            cwd=str(CLI.resolve().parents[3]),
+        )
+        assert result.returncode == 0
+        # The groups defined after the old guard's position are the ones that
+        # used to disappear.
+        for name in ("footage", "ab", "user", "workspace", "setup", "db", "account"):
+            assert name in result.stdout, name
+
+    def test_the_module_form_explains_errors_rather_than_tracing_them(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "snsauto.cli", "setup", "review-pack", "x"],
+            capture_output=True, text=True,
+            cwd=str(CLI.resolve().parents[3]),
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode != 0
+        assert "Traceback" not in combined

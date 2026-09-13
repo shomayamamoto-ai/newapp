@@ -68,6 +68,16 @@ def checklist(session, settings) -> list[Step]:
             else "、".join(p.upper() for p in publishable) or "投稿にはOAuth連携が必要です",
             "アカウント連携へ", "/accounts",
         ),
+        # Deliberately between connecting and publishing, because that is
+        # where it bites: the connection succeeds, the first post succeeds,
+        # and on YouTube and TikTok it is private until an audit nobody
+        # mentioned has been passed.
+        Step(
+            "review", "各社の審査状況を把握する", False,
+            "連携できても、審査を通るまで投稿が非公開に固定される媒体があります"
+            "（YouTube・TikTok）。Instagram は他社アカウントの連携に審査が必要です",
+            "`snsauto setup gates` で確認", "", optional=True,
+        ),
         Step(
             "publish", "投稿する", published > 0,
             f"{published}件" if published else "台本 → 動画 → 投稿の順に進みます",

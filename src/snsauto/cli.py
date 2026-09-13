@@ -43,6 +43,7 @@ ab_app = typer.Typer(help="A/Bテスト。", no_args_is_help=True)
 user_app = typer.Typer(help="Web UI のログインユーザー管理。", no_args_is_help=True)
 workspace_app = typer.Typer(help="ワークスペースの容量確認と手動削除。", no_args_is_help=True)
 watch_app = typer.Typer(help="競合アカウントの定点ウォッチと差分。", no_args_is_help=True)
+setup_app = typer.Typer(help="接続までの手順と、アプリ審査の申請資料。", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(research_app, name="research")
@@ -57,6 +58,7 @@ app.add_typer(worker_app, name="worker")
 app.add_typer(ab_app, name="ab")
 app.add_typer(user_app, name="user")
 app.add_typer(workspace_app, name="workspace")
+app.add_typer(setup_app, name="setup")
 
 console = Console()
 
@@ -225,6 +227,13 @@ def doctor():
 
     console.print("\n[dim]TikTok の検索は原理的に使えません（公開キーワード検索APIが"
                   "存在しないため）。`snsauto research import` でCSVを取り込んでください。[/dim]")
+
+    # The reviews are invisible from here: every capability above can read
+    # "可" while an unaudited project still locks every upload to private.
+    console.print("[dim]接続の先には各社の審査があります（YouTube と TikTok は"
+                  "通るまで投稿が非公開に固定されます）。"
+                  "`snsauto setup gates` で一覧、"
+                  "`snsauto setup connect <媒体>` で手順を表示します。[/dim]")
 
 
 def _ocr_state() -> tuple[bool, str]:
@@ -849,9 +858,6 @@ def template_eject(name: str):
     console.print(f"[green]テンプレートを取り出しました:[/green] {name} → {dest}")
 
 
-if __name__ == "__main__":
-    app()
-
 
 # ---------------- footage ----------------
 
@@ -1068,6 +1074,106 @@ def user_secret():
 
 # ---------------- database ----------------
 
+# ---------------- setup ----------------
+
+_STATE_MARK = {"done": "[green]済[/green]", "todo": "[red]未[/red]",
+               "unknown": "[yellow]?[/yellow]"}
+
+
+def _rich(text: str) -> str:
+    """Markdown emphasis, as the terminal renders it.
+
+    The gate descriptions are written once and shown in two places: here, and
+    in the markdown that `review-pack` writes. `**` is correct in the file and
+    noise on screen.
+    """
+    import re
+
+    return re.sub(r"\*\*(.+?)\*\*", r"[bold]\1[/bold]", text, flags=re.S)
+
+
+@setup_app.command("connect")
+def setup_connect(
+    platform: Platform = typer.Argument(..., help="接続するプラットフォーム"),
+):
+    """接続までに必要なことを、依存順に表示する。
+
+    ローカルで確認できるものは確認し、確認できないものは「?」として
+    確認方法を示します。推測で「済」とは出しません。
+    """
+    init_db()
+    from .onboarding import connect_plan
+
+    settings = get_settings()
+    with session_scope() as session:
+        steps, gates = connect_plan(platform, settings, session)
+
+    table = Table(title=f"{platform.value.upper()} 接続手順", header_style="bold",
+                  title_justify="left")
+    table.add_column("", width=3)
+    table.add_column("項目", max_width=26, overflow="fold")
+    # Folded, never truncated: the elided half of "この権限が無いと保存数が
+    # 取れません" is the half the operator needs.
+    table.add_column("状況", overflow="fold")
+    for step in steps:
+        table.add_row(_STATE_MARK[step.state], step.label,
+                      step.detail + (f"\n[dim]{step.action}[/dim]" if step.action else ""))
+    console.print(table)
+
+    pending = [s for s in steps if s.state == "todo"]
+    if pending:
+        console.print(f"\n[bold]次にやること[/bold]\n  {pending[0].label} — {pending[0].action}")
+
+    if gates:
+        console.print("\n[bold]接続した後に控えている審査[/bold]")
+        for gate in gates:
+            console.print(f"\n  [yellow]{gate.name}[/yellow]（目安 {gate.typical_wait}）")
+            console.print(f"    対象    : {gate.applies_to}")
+            console.print(f"    止まる  : {_rich(gate.blocks)}")
+            console.print(f"    必要    : {gate.cost}")
+            console.print(f"    [dim]{gate.source}[/dim]")
+
+
+@setup_app.command("review-pack")
+def setup_review_pack(
+    platform: Platform = typer.Argument(..., help="申請するプラットフォーム"),
+    out: Path = typer.Option(None, "--out", help="書き出し先（既定はワークスペース）"),
+):
+    """アプリ審査の申請文と操作録画の手順を書き出す。
+
+    このツールが実際に呼んでいるエンドポイントから起こしているので、
+    申請内容と実装の食い違い（差し戻しの最大の原因）が起きません。
+    """
+    from .onboarding import review_pack
+
+    settings = get_settings()
+    settings.ensure_workspace()
+    try:
+        body = review_pack(platform, settings)
+    except ValueError as exc:
+        # A platform we have not written a pack for is a known limit, not a
+        # crash, and must not be reported as "予期しないエラー".
+        raise typer.BadParameter(str(exc)) from exc
+    destination = out or (settings.workspace / f"{platform.value}-review-pack.md")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(body, encoding="utf-8")
+    console.print(f"[green]申請パックを書き出しました:[/green] {destination}")
+    console.print("[dim]申請フォームに貼り付ける英文と、録画すべき操作の手順が入っています。[/dim]")
+
+
+@setup_app.command("gates")
+def setup_gates():
+    """各プラットフォームの審査と、通るまで何が止まるかを一覧する。"""
+    from .onboarding import LAUNCH_GATES
+
+    for platform, gates in LAUNCH_GATES.items():
+        console.print(f"\n[bold]{platform.value.upper()}[/bold]")
+        for gate in gates:
+            console.print(f"  [yellow]{gate.name}[/yellow]（{gate.typical_wait}）")
+            console.print(f"    {_rich(gate.blocks)}")
+            console.print(f"    [dim]{gate.source}[/dim]")
+
+
 db_app = typer.Typer(help="Schema migrations.", no_args_is_help=True)
 app.add_typer(db_app, name="db")
 
@@ -1251,3 +1357,7 @@ def main() -> None:
             for line in explained.fix.split("\n"):
                 console.print(f"  [yellow]{line}[/yellow]" if line.strip() else "")
         raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()

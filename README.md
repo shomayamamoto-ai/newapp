@@ -676,6 +676,37 @@ SNSAUTO_PUBLIC_BASE_URL=https://...              # 承認後の戻り先（各�
 Instagramについては、ドキュメントの数字（25／50／100）が食い違うため、
 `content_publishing_limit` でアカウント自身の残量を問い合わせます。
 
+### 接続までの手順と、その先の審査
+
+各社の審査は、通っていなくても**APIが成功を返す**のが厄介なところです。
+YouTube と TikTok は監査前でも投稿が成功し、動画IDまで返りますが、実際には
+非公開に固定されています。気づかないまま非公開の動画が溜まります。
+
+```bash
+snsauto setup gates               # 各社の審査と、通るまで何が止まるかの一覧
+snsauto setup connect instagram   # 接続までの手順を依存順に、現状つきで表示
+snsauto setup review-pack instagram   # アプリ審査の申請文と録画手順を書き出す
+```
+
+| 媒体 | 審査 | 通るまで何が起きるか |
+|---|---|---|
+| Instagram | アプリ審査 + ビジネス認証 | 他社アカウントを連携できない（自分のアカウントは開発モードで可） |
+| YouTube | API利用コンプライアンス監査 | **アップロードした動画が全て非公開に固定される** |
+| TikTok | Content Posting API の監査 | **投稿が「自分のみ表示」に固定される** |
+| X | 有料ティア契約 | 検索APIが使えず競合調査ができない |
+
+`snsauto setup connect <媒体>` は、ローカルで確認できるもの（アプリ資格情報、
+戻り先URL、連携済みアカウント、付与された権限）は実際に確認し、
+確認できないもの（相手のアカウント種別など）は「?」として確認方法を示します。
+**推測で「済」とは表示しません。**
+
+`snsauto setup review-pack instagram` が出力するのは、申請フォームに貼り付ける
+英文の用途説明、権限ごとに呼んでいるエンドポイントの一覧、録画すべき操作の手順、
+差し戻しの典型的な理由です。用途説明は**このツールが実際に呼んでいるコードから
+起こしている**ので、申請内容と実装の食い違い（差し戻しの最大の原因）が起きません。
+エンドポイント名・フィールド名・メトリック名がコード中に実在することは
+テストで検証しています。
+
 ### Instagram を繋ぐまでの前提条件
 
 Instagram だけは、アプリを作れば繋がるという構造になっていません。
@@ -922,6 +953,13 @@ snsauto user create you@example.com --role admin
 ## 主要コマンド
 
 ```bash
+# セットアップと審査
+snsauto doctor                            # いま何ができて、何が足りないか
+snsauto setup connect instagram           # 接続までの手順を現状つきで
+snsauto setup gates                       # 各社の審査と、通るまで止まること
+snsauto setup review-pack instagram       # アプリ審査の申請パックを書き出す
+snsauto verify -p instagram               # 実接続の確認（読み取り専用）
+
 # 競合調査（上位50件を収集・スコアリング・構成分析）
 snsauto research run mybrand "副業 始め方" --platform youtube --limit 50
 snsauto research import mybrand "副業" competitors.csv --platform tiktok
