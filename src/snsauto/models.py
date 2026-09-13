@@ -296,6 +296,7 @@ class Storyboard(Base, TimestampMixin):
     style: Mapped[str | None] = mapped_column(String(200))
 
     script: Mapped[Script] = relationship(back_populates="storyboards")
+    renders: Mapped[list["Render"]] = relationship(back_populates="storyboard")
     shots: Mapped[list["Shot"]] = relationship(
         back_populates="storyboard",
         cascade="all, delete-orphan",
@@ -344,6 +345,10 @@ class Render(Base, TimestampMixin):
     duration_sec: Mapped[float] = mapped_column(Float, default=0.0)
     preset: Mapped[str | None] = mapped_column(String(80))
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # Needed to read a retention curve against the timeline that produced it:
+    # the shots carry the second every telop appeared, because we placed them.
+    storyboard: Mapped["Storyboard"] = relationship(back_populates="renders")
 
 
 class Publication(Base, TimestampMixin):
@@ -410,6 +415,10 @@ class MetricSnapshot(Base):
     reach: Mapped[int | None] = mapped_column(Integer)
     impressions: Mapped[int | None] = mapped_column(Integer)
     click_through_rate: Mapped[float | None] = mapped_column(Float)
+
+    # Where viewers left, not just how many. Only YouTube reports this, and
+    # only for the channel's own videos.
+    retention_curve: Mapped[dict | None] = mapped_column(JSON)
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 

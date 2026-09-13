@@ -62,8 +62,20 @@ class MetricsCollector:
             if duration:
                 record.retention_rate = min(1.0, record.avg_watch_sec / duration)
 
+        # The curve, where the platform has one. Fetched alongside the counts
+        # rather than on demand, because it is only available while the video
+        # is ours and the grant is live - and because it is the measurement
+        # that says *where* viewers left, which no aggregate can reconstruct.
+        curve = None
+        if hasattr(adapter, "fetch_retention_curve"):
+            try:
+                curve = adapter.fetch_retention_curve(publication.external_id)
+            except Exception as exc:
+                log.info("retention curve unavailable for %s: %s", publication.id, exc)
+
         snapshot = MetricSnapshot(
             publication_id=publication.id,
+            retention_curve=curve,
             views=record.views, likes=record.likes, comments=record.comments,
             shares=record.shares, saves=record.saves,
             watch_time_sec=record.watch_time_sec,
@@ -214,6 +226,34 @@ def summarize_publication(publication: Publication) -> dict:
         "at_24h": metrics_at_age(publication, MATURITY_HOURS),
         "mature": age_h >= MATURITY_HOURS,
     }
+
+
+def retention_report(publication: Publication) -> dict:
+    """Where this post lost viewers, against the timeline we authored.
+
+    The storyboard is the other half of the measurement: we know exactly when
+    each telop appeared because we placed it, so a drop-off resolves to a beat
+    rather than to a timestamp.
+    """
+    from .retention import compare_to_plan, diagnose
+
+    snapshots = sorted(publication.snapshots, key=lambda s: s.captured_at)
+    latest = next(
+        (s for s in reversed(snapshots) if s.retention_curve), None
+    )
+    render = getattr(publication, "render", None)
+    duration = getattr(render, "duration_sec", 0.0) or 0.0
+    board = getattr(render, "storyboard", None)
+    shots = sorted(getattr(board, "shots", []) or [], key=lambda s: s.index)
+
+    result = diagnose(
+        latest.retention_curve if latest else None, duration, shots
+    )
+    result["publication_id"] = publication.id
+    result["notes"] = compare_to_plan(result, shots)
+    if result.get("measured"):
+        result["captured_at"] = latest.captured_at
+    return result
 
 
 def platform_breakdown(publications: list[Publication]) -> dict[str, dict]:

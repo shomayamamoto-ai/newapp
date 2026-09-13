@@ -173,6 +173,75 @@ class YouTubeAdapter(BaseAdapter):
                 )
         return records
 
+    def fetch_retention_curve(self, external_id: str) -> dict | None:
+        """The second-by-second retention curve for one of our own videos.
+
+        This is the measurement everything else in retention analysis needs and
+        cannot substitute for. ``averageViewPercentage`` says a video held 45%
+        on average; this says *where* the 55% left, which is the only form that
+        points at something to change.
+
+        ``relativeRetentionPerformance`` comes back alongside it: YouTube's own
+        comparison against videos of similar length, so a curve can be read as
+        better or worse than par without us having to build a baseline.
+
+        Owner only, like all of the Analytics API - there is no competitor
+        equivalent of this call, on any platform. Returns None rather than an
+        empty curve when the grant is missing or the video is not ours.
+        """
+        token = self.token()
+        if not token:
+            return None
+        try:
+            resp = self._client.get(
+                ANALYTICS_API,
+                params={
+                    "ids": "channel==MINE",
+                    "startDate": "2005-02-14",
+                    "endDate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "dimensions": "elapsedVideoTimeRatio",
+                    "metrics": "audienceWatchRatio,relativeRetentionPerformance",
+                    # Organic only. Traffic the channel paid for leaves at a
+                    # different rate and would blur the shape we are reading.
+                    "filters": f"video=={external_id};audienceType==ORGANIC",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            log.info("retention curve unreachable for %s: %s", external_id, exc)
+            return None
+
+        if resp.status_code >= 400:
+            log.info(
+                "retention curve %s for %s%s", resp.status_code, external_id,
+                " - the account is missing yt-analytics.readonly"
+                if resp.status_code == 403 else "",
+            )
+            return None
+
+        rows = (resp.json() or {}).get("rows") or []
+        if not rows:
+            return None
+        points = []
+        for row in rows:
+            values = list(row) + [None, None, None]
+            try:
+                ratio = float(values[0])
+                watch = float(values[1])
+            except (TypeError, ValueError):
+                continue
+            relative = values[2]
+            points.append({
+                "elapsed_ratio": round(ratio, 4),
+                "watch_ratio": round(watch, 4),
+                "relative": (
+                    round(float(relative), 4)
+                    if isinstance(relative, (int, float)) else None
+                ),
+            })
+        points.sort(key=lambda p: p["elapsed_ratio"])
+        return {"points": points, "source": "youtube_analytics"} if points else None
+
     # ---------- account watch ----------
 
     def fetch_account(

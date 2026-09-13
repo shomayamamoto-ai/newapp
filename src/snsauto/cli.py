@@ -204,6 +204,44 @@ def project_list():
         console.print(table)
 
 
+@metrics_app.command("retention")
+def metrics_retention(publication_id: int):
+    """視聴維持カーブを、その動画のカット割りと重ねて表示する。"""
+    init_db()
+    from .analytics.collect import retention_report
+    from .models import Publication
+
+    with session_scope() as session:
+        publication = session.get(Publication, publication_id)
+        if publication is None:
+            raise typer.BadParameter(f"publication {publication_id} not found")
+        report = retention_report(publication)
+        if not report.get("measured"):
+            console.print(f"[yellow]{report['reason']}[/yellow]")
+            raise typer.Exit(0)
+
+        console.print(f"[bold]{report['summary']}[/bold]\n")
+        table = Table(title="離脱点", header_style="bold", title_justify="left")
+        table.add_column("時刻", justify="right"); table.add_column("離脱", justify="right")
+        table.add_column("残存", justify="right"); table.add_column("その時の画面", max_width=52)
+        for fall in report["drop_offs"]:
+            shot = fall.get("on_screen") or {}
+            telop = (shot.get("telop") or "").replace("\n", " ")
+            table.add_row(
+                f"{fall['from_sec']:.1f}s", f"-{fall['lost']:.0%}",
+                f"{fall['remaining']:.0%}",
+                f"{shot.get('index', 0) + 1}カット目 「{telop[:24]}」"
+                f"{shot.get('telop_chars', 0)}字/{shot.get('hold_sec', 0)}秒"
+                if shot else "-",
+            )
+        console.print(table)
+        if report.get("relative_performance") is not None:
+            console.print(f"同尺動画との比較: {report['relative_performance']:.2f} "
+                          "[dim](1.0で平均並み)[/dim]")
+        for note in report.get("notes") or []:
+            console.print(f"  [yellow]・{note}[/yellow]")
+
+
 # ---------------- workspace ----------------
 
 @workspace_app.command("usage")
