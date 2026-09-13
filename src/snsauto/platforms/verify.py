@@ -136,6 +136,7 @@ class ConnectionVerifier:
             + (f" / 連携アカウント経由 ({credentials.source})" if credentials else " / 環境変数"),
         ))
 
+        report.checks.append(self._check_scopes(platform, credentials))
         report.checks.append(self._check_search(adapter, caps, keyword))
         report.checks.append(self._check_account(adapter, caps, credentials))
         report.checks.append(self._check_insights(adapter, caps, platform, project_id))
@@ -198,6 +199,48 @@ class ConnectionVerifier:
             + (f" / フォロワー {profile.followers:,}" if profile.followers else "")
             + f" / 直近{len(posts)}件",
             data={"followers": profile.followers},
+        )
+
+    def _check_scopes(self, platform: Platform, credentials) -> Check:
+        """Whether the stored token carries every grant the adapter needs.
+
+        This runs before anything is posted, which is the point: the insights
+        check below needs a published post to have something to read, so an
+        account connected today would not find out it is missing a permission
+        until after its first post - and then only as an empty metric.
+        """
+        from ..models import SocialAccount
+        from .oauth import REQUIRED_SCOPES, missing_scopes
+
+        if not REQUIRED_SCOPES.get(platform):
+            return Check("scopes", SKIP, "このプラットフォームは権限を個別に要求しません")
+        account_id = getattr(credentials, "account_id", None)
+        if not account_id:
+            return Check(
+                "scopes", SKIP, "環境変数のトークンのため権限を確認できません",
+                "/accounts から連携すると、付与された権限まで検証できます。",
+            )
+        account = self.session.get(SocialAccount, account_id)
+        granted = list(getattr(account, "scopes", None) or [])
+        if not granted:
+            return Check(
+                "scopes", SKIP, "権限の記録がありません",
+                "権限を記録する前に連携されたアカウントです。"
+                "/accounts から再連携すると検証できるようになります。",
+            )
+
+        lacking = missing_scopes(platform, granted)
+        if lacking:
+            return Check(
+                "scopes", FAIL,
+                "不足している権限: " + ", ".join(lacking),
+                "/accounts から再連携してください。これが無いと次が取得できません: "
+                + " / ".join(lacking.values()),
+                data={"granted": granted, "missing": sorted(lacking)},
+            )
+        return Check(
+            "scopes", OK, f"必要な権限は揃っています（{len(granted)}件）",
+            data={"granted": granted, "missing": []},
         )
 
     def _check_insights(self, adapter, caps, platform, project_id) -> Check:

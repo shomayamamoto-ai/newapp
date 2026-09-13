@@ -57,10 +57,58 @@ FACEBOOK_GRAPH = f"https://graph.facebook.com/{FACEBOOK_VERSION}"
 INSTAGRAM_SCOPES = [
     "instagram_basic",
     "instagram_content_publish",
+    # Every number that makes a post worth analysing - reach, saves, shares,
+    # average watch time, skip rate - comes from the insights edge, and the
+    # insights edge is gated behind this one permission. Without it Instagram
+    # still publishes and still returns likes and comments, so the connection
+    # looks healthy while every retention figure comes back empty.
+    "instagram_manage_insights",
     "pages_show_list",
     "pages_read_engagement",
     "business_management",
 ]
+
+
+# What each grant buys, for the verification report. An account connected
+# before a scope was added keeps working and silently loses whatever that
+# scope unlocked, so the check has to compare against this rather than assume
+# the stored token is current.
+REQUIRED_SCOPES: dict[Platform, dict[str, str]] = {
+    Platform.YOUTUBE: {
+        "https://www.googleapis.com/auth/youtube.upload": "動画の投稿",
+        "https://www.googleapis.com/auth/youtube.readonly": "再生数・高評価などの取得",
+        "https://www.googleapis.com/auth/yt-analytics.readonly":
+            "視聴維持率と離脱カーブの取得",
+    },
+    Platform.TIKTOK: {
+        "user.info.basic": "アカウント情報の取得",
+        "video.publish": "動画の投稿",
+        "video.list": "投稿した動画の実績取得",
+    },
+    Platform.INSTAGRAM: {
+        "instagram_basic": "アカウントと投稿の参照",
+        "instagram_content_publish": "リールの投稿",
+        "instagram_manage_insights":
+            "リーチ・保存・シェア・平均視聴時間・スキップ率の取得",
+        "pages_show_list": "連携先Facebookページの特定",
+        "pages_read_engagement": "ハッシュタグ検索と競合アカウントの参照",
+        "business_management": "ビジネスアカウントとしての操作",
+    },
+}
+
+
+def missing_scopes(platform: Platform, granted) -> dict[str, str]:
+    """Required grants the token does not carry, with what each one unlocks.
+
+    An empty ``granted`` means the account predates scope recording rather than
+    that it holds nothing, so it is reported as unknown (empty) instead of as
+    every scope missing.
+    """
+    required = REQUIRED_SCOPES.get(platform, {})
+    if not granted:
+        return {}
+    held = set(granted)
+    return {scope: why for scope, why in required.items() if scope not in held}
 
 # --- X (OAuth 1.0a) ---
 X_REQUEST_TOKEN = "https://api.x.com/oauth/request_token"

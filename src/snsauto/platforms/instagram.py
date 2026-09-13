@@ -284,8 +284,24 @@ class InstagramAdapter(BaseAdapter):
                     "ig_reels_avg_watch_time", "reels_skip_rate",
                 ])},
             )
-        except PlatformError:
-            return record  # Insights need a recent post and extra permissions.
+        except PlatformError as exc:
+            # A refused *permission* is a broken setup, not a property of the
+            # post, and the difference matters: falling through here returns
+            # views=0, saves=0, shares=0, which the analysis layer cannot tell
+            # apart from a post that genuinely got none. Zeros like that drag
+            # every average that touches them. Raise instead, so the collector
+            # stores no snapshot and the operator is told what to fix.
+            if _is_permission_error(exc):
+                raise PlatformError(
+                    "Instagram: インサイト（リーチ・保存・平均視聴時間など）の"
+                    "取得権限がありません。連携時のトークンに "
+                    "instagram_manage_insights が含まれていない可能性があります。"
+                    "/accounts から再連携してください。"
+                    f"（APIの応答: {exc}）"
+                ) from exc
+            # Everything else really is about this post: insights are not
+            # available for older posts, nor for anything that is not a Reel.
+            return record
 
         values = {
             row["name"]: (row.get("values") or [{}])[0].get("value", 0)
@@ -323,6 +339,23 @@ class InstagramAdapter(BaseAdapter):
         if resp.status_code >= 400:
             raise PlatformError(f"Instagram API {resp.status_code}: {resp.text}")
         return resp.json()
+
+
+def _is_permission_error(exc: Exception) -> bool:
+    """Graph's way of saying "your token is not allowed to do that".
+
+    Code 10 and code 200 are the permission family; 803 is "object exists but
+    you cannot see it", which for the insights edge means the same thing.
+    """
+    text = str(exc)
+    return (
+        "Instagram API 403" in text
+        or '"code": 10' in text
+        or '"code": 200' in text
+        or '"code": 803' in text
+        or "does not have permission" in text
+        or "Insufficient" in text
+    )
 
 
 def _parse_dt(value: str | None):

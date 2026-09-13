@@ -259,6 +259,57 @@ class TestInstagram:
         assert record.skip_rate == pytest.approx(0.34)
         assert record.saves == 310
 
+    def test_a_refused_permission_raises_instead_of_returning_zeros(self):
+        """views=0 and saves=0 are measurements; a 403 is a broken setup.
+
+        Letting the denial fall through returns a record full of zeros that the
+        analysis layer cannot tell apart from a post that genuinely got none,
+        and those zeros drag every average they enter.
+        """
+        import httpx as _httpx
+
+        from snsauto.platforms.base import PlatformError
+
+        def handle(request):
+            if "/insights" in str(request.url):
+                return _httpx.Response(403, json={"error": {
+                    "message": "(#10) Application does not have permission for this action",
+                    "type": "OAuthException", "code": 10}})
+            return _httpx.Response(200, json={"like_count": 12, "comments_count": 3})
+
+        adapter = InstagramAdapter(
+            settings=settings(),
+            client=httpx.Client(transport=httpx.MockTransport(handle)),
+        )
+        with pytest.raises(PlatformError) as caught:
+            adapter.fetch_metrics("m1")
+        # It has to name the permission, or the operator cannot act on it.
+        assert "instagram_manage_insights" in str(caught.value)
+
+    def test_insights_unavailable_for_this_post_still_returns_the_counts(self):
+        """Not every insights failure is a permission problem.
+
+        Instagram does not serve insights for older posts or for anything that
+        is not a Reel. That is a property of the post, so the likes and
+        comments we did get are kept.
+        """
+        import httpx as _httpx
+
+        def handle(request):
+            if "/insights" in str(request.url):
+                return _httpx.Response(400, json={"error": {
+                    "message": "Insights data is not available for this media",
+                    "code": 100}})
+            return _httpx.Response(200, json={"like_count": 12, "comments_count": 3})
+
+        adapter = InstagramAdapter(
+            settings=settings(),
+            client=httpx.Client(transport=httpx.MockTransport(handle)),
+        )
+        record = adapter.fetch_metrics("m1")
+        assert record.likes == 12
+        assert record.avg_watch_sec is None      # not measured, not zero
+
     def test_business_discovery_nests_the_media_query_in_one_field_string(self):
         rec = Recorder({"/1784": {"business_discovery": {
             "followers_count": 52000, "media_count": 310, "username": "rival",

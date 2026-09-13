@@ -232,3 +232,100 @@ class TestTikTokIsHonest:
         v, project_id = verifier_with(db, adapter)
         result = checks(v.verify(Platform.TIKTOK, project_id))["search"]
         assert result.status == SKIP        # not FAIL: nothing is broken
+
+
+class TestScopeCheck:
+    """The grant an account actually holds, checked before it costs anything.
+
+    The insights check needs a published post to read, so an account connected
+    today cannot be checked that way until after its first post - and a missing
+    permission shows up there as an empty metric rather than as an error. This
+    check has no such prerequisite.
+    """
+
+    def _connected(self, session, platform, scopes):
+        from snsauto.models import SocialAccount
+        from snsauto.platforms.accounts import Credentials
+
+        account = SocialAccount(
+            platform=platform, external_id="x", access_token="t", scopes=scopes,
+        )
+        session.add(account)
+        session.flush()
+        return Credentials(access_token="t", account_id=account.id, source="connected")
+
+    def test_a_complete_grant_passes(self, db):
+        from snsauto.platforms.oauth import INSTAGRAM_SCOPES
+
+        session, project_id = db
+        credentials = self._connected(session, Platform.INSTAGRAM, list(INSTAGRAM_SCOPES))
+        v = ConnectionVerifier(session, Settings(_env_file=None))
+        assert v._check_scopes(Platform.INSTAGRAM, credentials).status == OK
+
+    def test_a_missing_grant_fails_and_names_what_it_costs(self, db):
+        from snsauto.platforms.oauth import INSTAGRAM_SCOPES
+
+        session, project_id = db
+        without = [s for s in INSTAGRAM_SCOPES if s != "instagram_manage_insights"]
+        credentials = self._connected(session, Platform.INSTAGRAM, without)
+        v = ConnectionVerifier(session, Settings(_env_file=None))
+        result = v._check_scopes(Platform.INSTAGRAM, credentials)
+
+        assert result.status == FAIL
+        assert "instagram_manage_insights" in result.detail
+        # The operator has to be told what stops working, not just a scope name.
+        assert "保存" in result.fix and "再連携" in result.fix
+
+    def test_an_unrecorded_grant_is_unknown_not_missing(self, db):
+        """Accounts connected before scopes were stored must not read as broken."""
+        session, project_id = db
+        credentials = self._connected(session, Platform.INSTAGRAM, [])
+        v = ConnectionVerifier(session, Settings(_env_file=None))
+        assert v._check_scopes(Platform.INSTAGRAM, credentials).status == SKIP
+
+    def test_an_environment_token_is_skipped(self, db):
+        from snsauto.platforms.accounts import Credentials
+
+        session, project_id = db
+        v = ConnectionVerifier(session, Settings(_env_file=None))
+        result = v._check_scopes(Platform.INSTAGRAM, Credentials(access_token="t"))
+        assert result.status == SKIP
+
+    def test_x_has_no_per_scope_requirement(self, db):
+        session, project_id = db
+        credentials = self._connected(session, Platform.X, ["anything"])
+        v = ConnectionVerifier(session, Settings(_env_file=None))
+        assert v._check_scopes(Platform.X, credentials).status == SKIP
+
+
+class TestRequestedScopesCoverWhatWeCall:
+    """Every grant the adapters depend on has to be asked for at connect time.
+
+    The failure this prevents is quiet: Instagram publishes and returns likes
+    and comments without `instagram_manage_insights`, so the connection looks
+    healthy while reach, saves, shares, average watch time and skip rate all
+    come back empty.
+    """
+
+    def test_insights_is_requested_for_instagram(self):
+        from snsauto.platforms.oauth import INSTAGRAM_SCOPES
+
+        assert "instagram_manage_insights" in INSTAGRAM_SCOPES
+
+    def test_analytics_is_requested_for_youtube(self):
+        from snsauto.platforms.oauth import YOUTUBE_SCOPES
+
+        assert "https://www.googleapis.com/auth/yt-analytics.readonly" in YOUTUBE_SCOPES
+
+    def test_every_requested_scope_is_documented(self):
+        """`snsauto verify` explains each grant, so none may go unexplained."""
+        from snsauto.platforms.oauth import (
+            INSTAGRAM_SCOPES, REQUIRED_SCOPES, TIKTOK_SCOPES, YOUTUBE_SCOPES,
+        )
+
+        for platform, requested in (
+            (Platform.INSTAGRAM, INSTAGRAM_SCOPES),
+            (Platform.YOUTUBE, YOUTUBE_SCOPES),
+            (Platform.TIKTOK, TIKTOK_SCOPES),
+        ):
+            assert sorted(REQUIRED_SCOPES[platform]) == sorted(requested), platform
