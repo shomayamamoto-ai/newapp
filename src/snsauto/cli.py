@@ -248,7 +248,7 @@ def _ocr_state() -> tuple[bool, str]:
 def project_create(
     name: str,
     description: str = typer.Option("", "--description", "-d"),
-    brand_profile: Path = typer.Option(None, "--brand-profile", help="JSON file: tone, persona, banned words"),
+    brand_profile: Path = typer.Option(None, "--brand-profile", help="JSONファイル: トーン・ペルソナ・禁止語"),
 ):
     """プロジェクト（クライアント／ブランド）を作る。"""
     init_db()
@@ -269,10 +269,10 @@ def project_list():
     with session_scope() as session:
         table = Table(header_style="bold")
         table.add_column("id", justify="right")
-        table.add_column("name")
-        table.add_column("runs", justify="right")
-        table.add_column("scripts", justify="right")
-        table.add_column("cycles", justify="right")
+        table.add_column("名前")
+        table.add_column("調査", justify="right")
+        table.add_column("台本", justify="right")
+        table.add_column("PDCA", justify="right")
         for p in session.query(Project).order_by(Project.id):
             table.add_row(str(p.id), p.name, str(len(p.research_runs)),
                           str(len(p.scripts)), str(len(p.pdca_cycles)))
@@ -480,11 +480,11 @@ def research_run(
     keyword: str,
     platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
     limit: int = typer.Option(50, "--limit", "-n"),
-    analyze: bool = typer.Option(True, "--analyze/--no-analyze", help="Break down the top performers"),
-    within_days: int = typer.Option(None, "--within-days", help="Only posts published in the last N days"),
-    duration_band: str = typer.Option(None, "--duration", help="short | medium | long"),
-    order: str = typer.Option(None, "--order", help="relevance | date | views"),
-    comments: bool = typer.Option(False, "--comments", help="Also pull comment text on the top posts"),
+    analyze: bool = typer.Option(True, "--analyze/--no-analyze", help="上位投稿の構成を分解する"),
+    within_days: int = typer.Option(None, "--within-days", help="直近N日の投稿だけに絞る"),
+    duration_band: str = typer.Option(None, "--duration", help="尺: short | medium | long"),
+    order: str = typer.Option(None, "--order", help="並び順: relevance | date | views"),
+    comments: bool = typer.Option(False, "--comments", help="上位投稿のコメント本文も取得する"),
 ):
     """キーワードの上位N件を集めて順位付けする。"""
     init_db()
@@ -581,7 +581,7 @@ def research_audio(
 @research_app.command("comments")
 def research_comments(
     run_id: int,
-    top_n: int = typer.Option(10, "--top", help="Mine this many top posts"),
+    top_n: int = typer.Option(10, "--top", help="上位何件からコメントを取得するか"),
 ):
     """上位投稿のコメント本文を取得し、何を聞かれているかを集計する。"""
     init_db()
@@ -603,8 +603,8 @@ def research_comments(
         console.print(f"質問の割合: {summary['question_share']:.0%}  "
                       f"内訳: {summary['intent_mix']}")
         table = Table(title="よく聞かれていること", header_style="bold")
-        table.add_column("likes", justify="right")
-        table.add_column("comment", max_width=70)
+        table.add_column("いいね", justify="right")
+        table.add_column("コメント", max_width=70)
         for row in summary["top_questions"]:
             table.add_row(str(row["likes"]), row["text"].replace("\n", " "))
         console.print(table)
@@ -613,10 +613,10 @@ def research_comments(
 def _print_top(run: ResearchRun, n: int = 10):
     table = Table(title=f"Top {n} - {run.keyword}", header_style="bold")
     table.add_column("#", justify="right")
-    table.add_column("title", max_width=48)
-    table.add_column("views", justify="right")
-    table.add_column("eng.", justify="right")
-    table.add_column("score", justify="right")
+    table.add_column("タイトル", max_width=48)
+    table.add_column("再生", justify="right")
+    table.add_column("反応率", justify="right")
+    table.add_column("スコア", justify="right")
     for post in sorted(run.posts, key=lambda p: p.rank)[:n]:
         table.add_row(str(post.rank), (post.title or post.external_id)[:48],
                       f"{post.views:,}", f"{post.engagement_rate:.2%}", f"{post.score:.3f}")
@@ -632,11 +632,11 @@ def create_all(
     platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
     duration: float = typer.Option(30.0, "--duration", "-d"),
     limit: int = typer.Option(50, "--limit", "-n"),
-    publish: list[Platform] = typer.Option([], "--publish", help="Post to every connected account on these platforms"),
-    account: list[int] = typer.Option([], "--account", help="Post to these account ids only"),
+    publish: list[Platform] = typer.Option([], "--publish", help="指定した媒体の連携済みアカウント全てに投稿"),
+    account: list[int] = typer.Option([], "--account", help="指定したアカウントIDにだけ投稿"),
     bgm: Path = typer.Option(None, "--bgm"),
-    live: bool = typer.Option(False, "--live", help="Actually publish (default is dry run)"),
-    csv_path: Path = typer.Option(None, "--csv", help="Use a CSV instead of the search API"),
+    live: bool = typer.Option(False, "--live", help="実際に投稿する（既定はドライラン）"),
+    csv_path: Path = typer.Option(None, "--csv", help="検索APIの代わりにCSVを使う"),
 ):
     """調査から動画・レポートまで一気に実行する。"""
     init_db()
@@ -654,6 +654,17 @@ def create_all(
             bgm=bgm, dry_run=not live, account_ids=list(account) or None,
         )
         console.print_json(json.dumps(result.summary(), ensure_ascii=False, default=str))
+        # Repeated outside the JSON on purpose: "published" with a warning is
+        # the one outcome a reader skims past, and it is the one that means
+        # the video is live somewhere nobody can see it.
+        for publication in result.publications:
+            if publication.warning:
+                console.print(
+                    f"\n[yellow]{publication.platform.value} は投稿できましたが、"
+                    f"公開範囲が要求と異なります[/yellow]"
+                )
+                for line in publication.warning.split("\n"):
+                    console.print(f"  [yellow]{line}[/yellow]")
 
 
 @create_app.command("script")
@@ -662,7 +673,7 @@ def create_script(
     keyword: str,
     platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
     duration: float = typer.Option(30.0, "--duration", "-d"),
-    run_id: int = typer.Option(None, "--run", help="Base the script on this research run"),
+    run_id: int = typer.Option(None, "--run", help="この調査結果をもとに台本を書く"),
 ):
     """台本を書く。"""
     init_db()
@@ -673,9 +684,9 @@ def create_script(
         console.print(f"[green]台本 {script.id}[/green]: {script.title}")
         table = Table(header_style="bold")
         table.add_column("#", justify="right")
-        table.add_column("time")
-        table.add_column("telop")
-        table.add_column("narration", max_width=46)
+        table.add_column("時間")
+        table.add_column("テロップ")
+        table.add_column("ナレーション", max_width=46)
         for line in script.lines:
             table.add_row(str(line["index"]), f"{line['start']:.1f}-{line['end']:.1f}",
                           line.get("telop", ""), line.get("narration", ""))
@@ -686,12 +697,12 @@ def create_script(
 def create_video(
     script_id: int,
     bgm: Path = typer.Option(None, "--bgm"),
-    style: str = typer.Option(None, "--style", help="Visual style hint"),
+    style: str = typer.Option(None, "--style", help="映像スタイルの指示"),
     ken_burns: bool = typer.Option(True, "--ken-burns/--static"),
     visual_mode: str = typer.Option(
-        None, "--visual", help="still | animate | footage | auto"
+        None, "--visual", help="映像モード: still | animate | footage | auto"
     ),
-    narrate: bool = typer.Option(False, "--narrate", help="Synthesise narration"),
+    narrate: bool = typer.Option(False, "--narrate", help="ナレーションを合成する"),
 ):
     """絵コンテ・素材・書き出しまで一括で行う（ワンタッチ編集）。"""
     init_db()
@@ -843,8 +854,8 @@ def _print_report(report):
 def template_list():
     """レポートのテンプレート一覧と、上書きの有無を表示する。"""
     table = Table(header_style="bold")
-    table.add_column("template")
-    table.add_column("source")
+    table.add_column("テンプレート")
+    table.add_column("取り出し元")
     for row in list_templates():
         table.add_row(row["name"], "[green]user override[/green]" if row["overridden"] else "built-in")
     console.print(table)
@@ -863,7 +874,7 @@ def template_eject(name: str):
 
 @footage_app.command("index")
 def footage_index(
-    directory: Path = typer.Argument(None, help="Defaults to SNSAUTO_FOOTAGE_DIR"),
+    directory: Path = typer.Argument(None, help="省略時は SNSAUTO_FOOTAGE_DIR"),
 ):
     """実写素材のフォルダを索引化し、カットに割り当てられるようにする。"""
     init_db()
@@ -873,10 +884,10 @@ def footage_index(
         assets = FootageLibrary(session).index(directory)
         console.print(f"[green]素材を{len(assets)}件索引しました[/green]")
         table = Table(header_style="bold")
-        table.add_column("file")
-        table.add_column("dur", justify="right")
-        table.add_column("size")
-        table.add_column("keywords")
+        table.add_column("ファイル")
+        table.add_column("尺", justify="right")
+        table.add_column("サイズ")
+        table.add_column("キーワード")
         for asset in assets[:25]:
             table.add_row(
                 Path(asset.path).name, f"{asset.duration_sec:.1f}s",
@@ -894,10 +905,10 @@ def footage_list():
     with session_scope() as session:
         table = Table(header_style="bold")
         table.add_column("id", justify="right")
-        table.add_column("file")
-        table.add_column("dur", justify="right")
-        table.add_column("vertical")
-        table.add_column("keywords")
+        table.add_column("ファイル")
+        table.add_column("尺", justify="right")
+        table.add_column("縦型")
+        table.add_column("キーワード")
         for asset in session.query(ClipAsset).order_by(ClipAsset.id):
             table.add_row(
                 str(asset.id), Path(asset.path).name, f"{asset.duration_sec:.1f}s",
@@ -910,8 +921,8 @@ def footage_list():
 
 @worker_app.command("run")
 def worker_run(
-    interval: float = typer.Option(None, "--interval", help="Seconds between ticks"),
-    once: bool = typer.Option(False, "--once", help="Run a single tick and exit"),
+    interval: float = typer.Option(None, "--interval", help="実行間隔（秒）"),
+    once: bool = typer.Option(False, "--once", help="1回だけ実行して終了する"),
 ):
     """予約投稿の実行と実績収集を繰り返す（常駐）。"""
     init_db()
@@ -974,9 +985,9 @@ def ab_create(
         )
         console.print(f"[green]A/Bテスト {experiment.id} を作成しました[/green]: {experiment.name}")
         table = Table(header_style="bold")
-        table.add_column("arm")
-        table.add_column("script", justify="right")
-        table.add_column("treatment")
+        table.add_column("群")
+        table.add_column("台本", justify="right")
+        table.add_column("介入内容")
         for variant in experiment.variants:
             detail = ", ".join(
                 f"{k}={v}" for k, v in variant.treatment.items()
@@ -1030,7 +1041,7 @@ def user_create(
     email: str,
     password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
     name: str = typer.Option(None, "--name"),
-    role: str = typer.Option("editor", "--role", help="admin | editor | viewer"),
+    role: str = typer.Option("editor", "--role", help="権限: admin | editor | viewer"),
 ):
     """Web UI のログインユーザーを作る。"""
     init_db()
@@ -1051,10 +1062,10 @@ def user_list():
     with session_scope() as session:
         table = Table(header_style="bold")
         table.add_column("id", justify="right")
-        table.add_column("email")
-        table.add_column("role")
-        table.add_column("active")
-        table.add_column("last login")
+        table.add_column("メール")
+        table.add_column("権限")
+        table.add_column("有効")
+        table.add_column("最終ログイン")
         for user in session.query(User).order_by(User.id):
             table.add_row(
                 str(user.id), user.email, user.role,
@@ -1226,11 +1237,11 @@ def account_list():
         service = AccountService(session)
         table = Table(header_style="bold")
         table.add_column("id", justify="right")
-        table.add_column("platform")
-        table.add_column("account")
-        table.add_column("expires")
-        table.add_column("24h posts", justify="right")
-        table.add_column("state")
+        table.add_column("媒体")
+        table.add_column("アカウント")
+        table.add_column("期限")
+        table.add_column("24h投稿数", justify="right")
+        table.add_column("状態")
 
         accounts = session.query(SocialAccount).order_by(SocialAccount.id).all()
         if not accounts:
@@ -1274,7 +1285,7 @@ def account_connect_url(platform: Platform):
 
 
 @account_app.command("refresh")
-def account_refresh(account_id: int = typer.Argument(None, help="Omit to refresh all due")):
+def account_refresh(account_id: int = typer.Argument(None, help="省略すると期限が近いもの全てを更新")):
     """期限が近いアクセストークンを更新する。"""
     init_db()
     from .models import SocialAccount
@@ -1306,11 +1317,11 @@ def account_limits():
     with session_scope() as session:
         service = AccountService(session)
         table = Table(header_style="bold")
-        table.add_column("platform")
-        table.add_column("used (24h)", justify="right")
-        table.add_column("cap", justify="right")
-        table.add_column("can post")
-        table.add_column("note")
+        table.add_column("媒体")
+        table.add_column("24h使用", justify="right")
+        table.add_column("上限", justify="right")
+        table.add_column("投稿可")
+        table.add_column("備考")
         for platform in Platform:
             rate = service.check_rate(platform)
             table.add_row(

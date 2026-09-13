@@ -91,7 +91,10 @@ class PipelineResult:
             "voice": self.voice.summary() if self.voice else None,
             "publications": [
                 {"platform": p.platform.value, "account_id": p.account_id,
-                 "status": p.status.value, "url": p.external_url, "error": p.error}
+                 "status": p.status.value, "url": p.external_url, "error": p.error,
+                 # A published post nobody can see reads as a success without
+                 # these two.
+                 "visibility": p.visibility, "warning": p.warning}
                 for p in self.publications
             ],
             "reports": self.report_paths,
@@ -486,6 +489,16 @@ class Pipeline:
                 result = adapter.publish(request)
                 publication.external_id = result.external_id
                 publication.external_url = result.url
+                publication.visibility = result.visibility
+                # A published post that nobody can see is the failure mode
+                # these two platforms have in common, and neither reports it
+                # as one. Recorded on the post, not just logged.
+                publication.warning = "\n".join(result.warnings) or None
+                if result.warnings:
+                    log.warning(
+                        "published to %s with a warning: %s",
+                        platform.value, " / ".join(result.warnings),
+                    )
                 publication.status = (
                     PublicationStatus.SCHEDULED
                     if result.status == "scheduled"

@@ -37,6 +37,48 @@ class TestHelpIsInOneLanguage:
 
         assert JAPANESE.search(app.info.help or "")
 
+    def test_every_option_help_is_japanese(self):
+        """The command descriptions were translated; the option help was not.
+
+        `--help` shows both on the same screen, so half a translation reads as
+        a bug rather than as a language choice.
+        """
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        english = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if ast.unparse(node.func) not in ("typer.Option", "typer.Argument"):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "help" or not isinstance(keyword.value, ast.Constant):
+                    continue
+                text = keyword.value.value
+                if (isinstance(text, str) and re.search(r"[A-Za-z]{3,}", text)
+                        and not JAPANESE.search(text)):
+                    english.append((node.lineno, text))
+        assert english == [], f"English option help: {english}"
+
+    def test_every_table_heading_is_japanese(self):
+        """A Japanese table with English column headings is the same problem,
+        and it is the part the operator reads most often."""
+        tree = ast.parse(CLI.read_text(encoding="utf-8"))
+        # Acronyms that are read as-is in Japanese.
+        allowed = {"PDCA", "URL", "ID", "API", "HTML", "PDF", "CSV", "SNS", "AI"}
+        english = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and ast.unparse(node.func) == "table.add_column"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                label = node.args[0].value
+                if (re.search(r"[A-Za-z]{3,}", label)
+                        and not JAPANESE.search(label)
+                        and label not in allowed):
+                    english.append((node.lineno, label))
+        assert english == [], f"English column headings: {english}"
+
 
 class TestErrorsExplainThemselves:
     def test_a_missing_api_key_names_the_key_and_where_to_look(self):

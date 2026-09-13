@@ -394,12 +394,31 @@ class YouTubeAdapter(BaseAdapter):
 
         data = resp.json()
         vid = data.get("id")
-        return PublishResult(
+        # What YouTube actually set, which is not always what we sent. Until a
+        # Google Cloud project passes the API compliance audit, every upload
+        # made through the API is forced to private - and the upload still
+        # returns 200 with a video id, so nothing else in this flow would
+        # notice. Scheduled posts are private on purpose and are not a
+        # downgrade.
+        actual = ((data.get("status") or {}).get("privacyStatus") or "").lower() or None
+        requested = "private" if request.scheduled_for else (request.privacy or "").lower()
+        result = PublishResult(
             external_id=vid,
             url=f"https://www.youtube.com/watch?v={vid}" if vid else None,
             status="scheduled" if request.scheduled_for else "published",
+            visibility=actual,
+            requested_visibility=requested or None,
             raw=data,
         )
+        if result.visibility_downgraded:
+            result.warnings.append(
+                f"YouTube はこの動画を「{actual}」で公開しました"
+                f"（指定したのは「{requested}」です）。"
+                "Google Cloud プロジェクトのAPI利用コンプライアンス監査が"
+                "未完了の場合、APIからの投稿はすべて非公開に固定されます。"
+                "`snsauto setup gates` を参照してください。"
+            )
+        return result
 
     # ---------- insights ----------
 

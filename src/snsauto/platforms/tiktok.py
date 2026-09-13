@@ -15,6 +15,7 @@ bytes via FILE_UPLOAD. Two hard limits are worth knowing before you rely on it:
 from __future__ import annotations
 
 import csv
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,8 @@ from .base import (
     PublishRequest,
     PublishResult,
 )
+
+log = logging.getLogger(__name__)
 
 API = "https://open.tiktokapis.com/v2"
 CHUNK = 10 * 1024 * 1024
@@ -102,6 +105,27 @@ class TikTokAdapter(BaseAdapter):
 
     # ---------- publish ----------
 
+    def creator_info(self) -> dict:
+        """What this creator is allowed to post right now.
+
+        The useful field is ``privacy_level_options``: an app that has not
+        passed TikTok's audit gets ``["SELF_ONLY"]`` and nothing else. That is
+        the only way to learn, before uploading, that the post nobody will see
+        is about to be made.
+        """
+        self._require(Capability.PUBLISH)
+        response = self._post(f"{API}/post/publish/creator_info/query/", {})
+        return response.get("data") or {}
+
+    def allowed_privacy_levels(self) -> list[str]:
+        try:
+            return list(self.creator_info().get("privacy_level_options") or [])
+        except PlatformError as exc:
+            # Not being able to ask is not the same as being refused; the
+            # publish path treats an empty list as "unknown" and proceeds.
+            log.info("TikTok creator_info unavailable: %s", exc)
+            return []
+
     def publish(self, request: PublishRequest) -> PublishResult:
         self._require(Capability.PUBLISH)
         path = request.video_path
@@ -109,14 +133,26 @@ class TikTokAdapter(BaseAdapter):
             raise PlatformError(f"video not found: {path}")
         size = os.path.getsize(path)
 
+        wanted = request.extra.get("privacy_level", "PUBLIC_TO_EVERYONE")
+        allowed = self.allowed_privacy_levels()
+        warnings: list[str] = []
+        if allowed and wanted not in allowed:
+            # Asked for before the bytes go up, because TikTok accepts the
+            # upload either way and silently files it as SELF_ONLY.
+            warnings.append(
+                f"TikTok はこのアカウントで「{wanted}」を許可していません"
+                f"（選択できるのは {', '.join(allowed)} です）。"
+                "アプリがContent Posting APIの監査を通過していない場合、"
+                "投稿は「自分のみ表示」に固定されます。"
+                "`snsauto setup gates` を参照してください。"
+            )
+
         init = self._post(
             f"{API}/post/publish/video/init/",
             {
                 "post_info": {
                     "title": request.full_caption(limit=2200),
-                    "privacy_level": request.extra.get(
-                        "privacy_level", "PUBLIC_TO_EVERYONE"
-                    ),
+                    "privacy_level": wanted,
                     "disable_duet": False,
                     "disable_comment": False,
                     "disable_stitch": False,
@@ -153,6 +189,11 @@ class TikTokAdapter(BaseAdapter):
         return PublishResult(
             external_id=publish_id,
             status="processing",
+            # TikTok settles visibility asynchronously, so the honest value
+            # here is what it told us it would allow, not an assumption.
+            visibility=(wanted if not warnings else (allowed[0] if allowed else None)),
+            requested_visibility=wanted,
+            warnings=warnings,
             raw=data,
         )
 

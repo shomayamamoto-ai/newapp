@@ -382,6 +382,15 @@ class Publication(Base, TimestampMixin):
     external_url: Mapped[str | None] = mapped_column(String(600))
     error: Mapped[str | None] = mapped_column(Text)
 
+    # What the platform actually set, which is not always what was asked for.
+    # YouTube locks API uploads to private until the project passes its
+    # compliance audit and TikTok forces SELF_ONLY until the app passes its
+    # own; both return success. Kept apart from `error` because the post did
+    # succeed - it is simply somewhere nobody can see it, and that has to
+    # survive as a property of the post rather than a line in a log.
+    visibility: Mapped[str | None] = mapped_column(String(40))
+    warning: Mapped[str | None] = mapped_column(Text)
+
     # Held by the worker that is publishing this row, so two workers on one
     # database cannot post the same video twice.
     claimed_by: Mapped[str | None] = mapped_column(String(120))

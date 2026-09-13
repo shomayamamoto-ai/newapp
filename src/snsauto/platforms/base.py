@@ -139,10 +139,33 @@ class PublishRequest:
 
 @dataclass(slots=True)
 class PublishResult:
+    """What the platform did with the upload - which is not always what we asked.
+
+    ``visibility`` is separate from ``status`` because a post can be fully
+    published and still invisible: YouTube locks every API upload to private
+    until the project passes its compliance audit, and TikTok forces SELF_ONLY
+    until the app passes its own. Both return success. Recording what the
+    platform actually set, next to what we requested, is the only way the
+    difference ever surfaces.
+
+    ``warnings`` carries those in the operator's own language, for the post
+    record and the screen.
+    """
+
     external_id: str | None
     url: str | None = None
     status: str = "published"
+    visibility: str | None = None
+    requested_visibility: str | None = None
+    warnings: list[str] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+
+    @property
+    def visibility_downgraded(self) -> bool:
+        """The platform published it somewhere nobody can see it."""
+        if not self.visibility or not self.requested_visibility:
+            return False
+        return self.visibility.lower() != self.requested_visibility.lower()
 
 
 @dataclass(slots=True)

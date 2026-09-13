@@ -722,3 +722,36 @@ class TestOcrEnvironmentReport:
         ok, detail = webapp._ocr_status()
         assert ok is True
         assert detail == "jpn+vert"
+
+
+class TestAnInvisiblePostIsNotAGreenRow:
+    """A post that published into a visibility nobody asked for.
+
+    The status pill says "published" and is green, because it did publish.
+    The badge next to it is the only thing on the page that says the video is
+    somewhere nobody can see it.
+    """
+
+    def test_the_project_page_marks_it(self, app_env, tmp_path):
+        from snsauto import db as dbmod
+        from snsauto.models import Platform, Publication, PublicationStatus
+
+        client, ids = app_env
+        with dbmod.session_scope() as session:
+            session.add(Publication(
+                project_id=ids["project"], platform=Platform.YOUTUBE,
+                status=PublicationStatus.PUBLISHED, caption="c",
+                external_id="v1", external_url="https://youtu.be/v1",
+                visibility="private",
+                warning="YouTube はこの動画を「private」で公開しました。"
+                        "API利用コンプライアンス監査が未完了の可能性があります。",
+            ))
+
+        page = client.get(f"/projects/{ids['project']}").text
+        assert "公開範囲 private" in page
+        # The reason travels with the badge, not only in a log.
+        assert "監査" in page
+
+    def test_an_ordinary_post_gets_no_badge(self, app_env):
+        client, ids = app_env
+        assert "公開範囲" not in client.get(f"/projects/{ids['project']}").text
