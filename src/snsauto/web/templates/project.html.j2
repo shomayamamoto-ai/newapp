@@ -79,6 +79,21 @@
 </div>
 {% endif %}
 
+<h2>このアカウントで効いているもの</h2>
+{% if playbook.findings %}
+<p class="sub" style="margin-bottom:8px">
+  自社の実績{{ playbook.sample }}本から、ばらつきを超える差が出た項目です。
+  次の台本生成に自動で反映されます。
+</p>
+<ul class="tight">
+  {% for finding in playbook.findings %}
+  <li>{{ finding.sentence() }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="sub">{{ playbook.note }}</p>
+{% endif %}
+
 <h2>調査</h2>
 {% if project.research_runs %}
 <table>

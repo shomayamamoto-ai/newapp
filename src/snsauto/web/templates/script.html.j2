@@ -44,6 +44,31 @@
 
 {% if render and user.can_publish %}
 <h2>投稿</h2>
+{% set qc = (render.meta or {}).get('qc') if render else None %}
+{% if qc and qc.issues %}
+<h2>出荷前チェック</h2>
+<p class="sub" style="margin-bottom:8px">
+  しきい値は{% if qc.calibration and qc.calibration.source %}{{ qc.calibration.source }}の実測値{% else %}一般的な目安{% endif %}で較正しています。
+</p>
+<div class="qc">
+  {% for issue in qc.issues %}
+  <div class="qc-row {{ issue.severity }}">
+    <span class="pill {{ 'bad' if issue.severity == 'block' else ('warn' if issue.severity == 'warn' else 'mute') }}">
+      {{ {'block':'要修正','warn':'警告','info':'参考'}.get(issue.severity, issue.severity) }}</span>
+    <div>
+      <strong>{{ issue.what }}</strong>
+      <div class="sub">{{ issue.why }}</div>
+      <div class="sub">→ {{ issue.fix }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% if qc.blocking %}
+<div class="note warn"><strong>{{ qc.blocking }}件の修正項目があります。</strong>
+  いずれも視聴者全員に見える不具合です。書き出し直すか、了承のうえで投稿してください。</div>
+{% endif %}
+{% endif %}
+
 <form class="act danger" method="post" action="/renders/{{ render.id }}/publish">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="f" style="flex:1;min-width:260px"><label>投稿するアカウント</label>
@@ -79,6 +104,9 @@
       <span class="sub">{{ local_timezone }} の時刻として扱います</span></div>
   <div class="f"><label for="pc">確認のため PUBLISH と入力</label>
     <input id="pc" name="confirm" placeholder="PUBLISH" required style="width:120px"></div>
+    {% if qc and qc.blocking %}
+    <div class="f chk"><label for="ackq"><input id="ackq" type="checkbox" name="acknowledge_quality" value="true"> 修正項目を了承して投稿する</label></div>
+    {% endif %}
   <button class="btn">投稿する</button>
 </form>
 <p class="sub">公開投稿は取り消せません。予約した場合はワーカー

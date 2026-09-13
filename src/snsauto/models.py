@@ -279,6 +279,11 @@ class Script(Base, TimestampMixin):
     # clean" stay distinguishable before a post goes out.
     originality: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # Which of this account's own measured findings shaped this script, and
+    # how many posts they came from. Recorded so a script can be read back
+    # against the evidence that produced it.
+    playbook: Mapped[dict] = mapped_column(JSON, default=dict)
+
     project: Mapped[Project] = relationship(back_populates="scripts")
     storyboards: Mapped[list["Storyboard"]] = relationship(
         back_populates="script", cascade="all, delete-orphan"
@@ -382,6 +387,10 @@ class Publication(Base, TimestampMixin):
     claimed_by: Mapped[str | None] = mapped_column(String(120))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # Needed to read a post back against the choices that produced it: the
+    # script carries the hook, the render carries the shots and the duration.
+    script: Mapped["Script | None"] = relationship()
+    render: Mapped["Render | None"] = relationship()
     snapshots: Mapped[list["MetricSnapshot"]] = relationship(
         back_populates="publication", cascade="all, delete-orphan"
     )

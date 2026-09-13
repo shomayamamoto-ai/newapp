@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 
+from ..analytics.playbook import build as build_playbook
+from ..analytics.playbook import to_prompt
 from .originality import (
     MAX_REGENERATIONS,
     avoid_instruction,
@@ -89,7 +91,8 @@ class ScriptService:
         self.llm = llm
 
     def _generate_original(
-        self, keyword, platform, duration, project, research, corpus
+        self, keyword, platform, duration, project, research, corpus,
+        playbook_prompt: str = "",
     ) -> tuple[dict, dict]:
         """Write the script, and rewrite it if it came back as a copy.
 
@@ -103,7 +106,7 @@ class ScriptService:
         to see that this one needs reading before it goes out.
         """
         attempts: list[tuple[dict, dict]] = []
-        extra = ""
+        extra = playbook_prompt
         for _ in range(MAX_REGENERATIONS + 1):
             data = self.llm.write_script(
                 keyword=keyword + extra,
@@ -116,7 +119,9 @@ class ScriptService:
             attempts.append((data, result))
             if not result.get("checked") or result.get("clean"):
                 return data, result
-            extra = avoid_instruction(result["findings"])
+            # Keep the playbook on the retry: the rewrite still has to follow
+            # what works for this account, not just avoid the copied phrases.
+            extra = playbook_prompt + avoid_instruction(result["findings"])
             log.info(
                 "script overlapped competitor copy (%s); regenerating",
                 result["findings"][0]["shared"],
@@ -147,9 +152,14 @@ class ScriptService:
             research = summarize_corpus(_records_from_run(run)) if run else {"count": 0}
 
         corpus = corpus_from_run(run)
+        # What this account's own results say. Empty until there is enough of
+        # them, which is deliberate: the generator must not be handed guesses
+        # dressed as measurements.
+        playbook = build_playbook(self.session, project.id, platform)
         if self.llm is not None:
             data, originality = self._generate_original(
-                keyword, platform, duration, project, research, corpus
+                keyword, platform, duration, project, research, corpus,
+                playbook_prompt=to_prompt(playbook),
             )
         else:
             data = _fallback_script(keyword, duration, research)
@@ -170,6 +180,11 @@ class ScriptService:
             hashtags=data.get("hashtags", []),
             rationale=data.get("rationale"),
             originality=originality,
+            playbook=(
+                {"sample": playbook.sample, "reliability": playbook.reliability,
+                 "applied": [f.sentence() for f in playbook.findings],
+                 "note": playbook.note}
+            ),
         )
         self.session.add(script)
         self.session.flush()

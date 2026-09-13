@@ -215,6 +215,7 @@ def _publish(runner, session, job, params) -> dict:
         [Platform(p) for p in params.get("platforms", [])],
         scheduled_for=scheduled_for,
         dry_run=bool(params.get("dry_run", True)),
+        skip_quality_gate=bool(params.get("skip_quality_gate")),
         account_ids=params.get("account_ids") or None,
     )
     return {

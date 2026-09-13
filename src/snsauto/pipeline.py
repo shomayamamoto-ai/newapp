@@ -52,11 +52,16 @@ from .platforms.accounts import AccountService, assert_account_scope
 from .reporting.service import ReportService
 from .storage import StorageError, build_storage
 from .research.comments import CommentMiner
-from .research.keyword import ResearchService
+from .analytics.stats import median
+from .research.keyword import ResearchService, summarize_corpus
 from .research.watch import WatchService, diff_runs
 from .research.structure import StructureService
 
 log = logging.getLogger(__name__)
+
+
+class QualityGateError(RuntimeError):
+    """A finished video has a defect that will be visible to every viewer."""
 
 
 @dataclass
@@ -275,7 +280,84 @@ class Pipeline:
         )
         self.session.add(render)
         self.session.flush()
+
+        # Inspect before anyone can publish it. Doing this at render time
+        # means the report is already there when someone opens the page, and
+        # the defects are named while the storyboard is still fresh.
+        render.meta = {**(render.meta or {}), "qc": self.inspect(render).as_dict()}
+        self.session.flush()
         return render
+
+    def inspect(self, render: Render, research: dict | None = None):
+        """Quality report for a finished video.
+
+        Calibrated against the research run the script came from and this
+        account's own retention history, so the thresholds are measurements
+        rather than opinions. Never raises: a video that cannot be inspected
+        is reported as such, not treated as a failure to render.
+        """
+        from .media.qc import Report, check_render
+
+        board = render.storyboard
+        script = getattr(board, "script", None)
+        shots = sorted(getattr(board, "shots", []) or [], key=lambda s: s.index)
+        platform = script.platform if script else Platform.TIKTOK
+
+        if research is None:
+            research = self._research_profile(script)
+        try:
+            retention = self._retention_profile(script)
+            return check_render(render, shots, platform, research, retention)
+        except Exception as exc:
+            log.warning("quality check failed for render %s: %s", render.id, exc)
+            return Report()
+
+    def _research_profile(self, script) -> dict:
+        """The corpus this script was written against, with telop and pacing.
+
+        These are what the QC thresholds are calibrated on, so they come from
+        the same run the script used - not from whatever was measured last.
+        """
+        run = getattr(script, "run", None) if script else None
+        if run is None:
+            return {}
+        from .reporting.service import _records  # noqa: PLC0415
+
+        try:
+            summary = summarize_corpus(
+                _records(run), timezone_name=self.settings.timezone
+            )
+        except Exception:
+            return {}
+
+        telop_stats, pacing_stats = [], []
+        for post in run.posts:
+            telop = (post.structure.telop if post.structure else None) or {}
+            onscreen = telop.get("onscreen") or {}
+            if onscreen.get("event_count"):
+                telop_stats.append(onscreen)
+            if telop.get("pacing", {}).get("avg_shot_sec"):
+                pacing_stats.append(telop["pacing"])
+
+        if telop_stats:
+            summary["telop"] = {
+                "chars_per_sec": median([t["chars_per_sec"] for t in telop_stats]),
+                "avg_chars": median([t["avg_chars"] for t in telop_stats]),
+            }
+        if pacing_stats:
+            summary["pacing"] = {
+                "avg_shot_sec": median([p["avg_shot_sec"] for p in pacing_stats])
+            }
+        return summary
+
+    def _retention_profile(self, script) -> dict:
+        from .analytics.playbook import build as build_playbook  # noqa: PLC0415
+
+        if script is None:
+            return {}
+        return build_playbook(
+            self.session, script.project_id, script.platform
+        ).retention
 
     def publish_targets(
         self,
@@ -325,7 +407,23 @@ class Pipeline:
         dry_run: bool = False,
         extra: dict | None = None,
         account_ids: list[int] | None = None,
+        skip_quality_gate: bool = False,
     ) -> list[Publication]:
+        if not skip_quality_gate:
+            blocking = [
+                issue for issue in self.inspect(render).issues
+                if issue.severity == "block"
+            ]
+            if blocking:
+                # These are defects that are visible on every device - a wrong
+                # aspect ratio, a URL split across lines. Publishing is not
+                # undoable, so the default is to stop and say what to fix.
+                raise QualityGateError(
+                    "投稿前の品質チェックで修正が必要な項目が見つかりました:\n"
+                    + "\n".join(f"  ・{i.what}\n    → {i.fix}" for i in blocking)
+                    + "\n修正して書き出し直すか、了承のうえで実行してください。"
+                )
+
         published = []
         for platform, account_id in self.publish_targets(project, platforms, account_ids):
             publication = Publication(

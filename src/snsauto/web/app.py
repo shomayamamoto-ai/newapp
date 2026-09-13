@@ -58,6 +58,7 @@ from ..platforms.oauth import OAuthError, get_provider, oauth_readiness
 from ..storage import build_storage, storage_status
 from ..reporting.templates import _fmt_dt, _fmt_dur, _fmt_int, _fmt_pct
 from ..analytics.pdca import METRIC_JA, posts_needed
+from ..analytics.playbook import build as build_playbook
 from ..db import db_permission_warning
 from ..workspace import warning as workspace_warning
 from ..analytics.stats import RELIABILITY_JA
@@ -400,6 +401,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             publications=publications, perf=perf,
             renders=[r["render"] for r in scripts if r["render"]],
             competitors=competitors,
+            playbook=build_playbook(session, project.id),
             # TikTok has neither keyword search nor an account-lookup API, so
             # offering it here would only produce a competitor that can never
             # be swept.
@@ -801,6 +803,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         render_id: int, request: Request,
         accounts: list[str] = Form([]), platforms: list[str] = Form([]),
         scheduled_for: str = Form(""), confirm: str = Form(""),
+        acknowledge_quality: bool = Form(False),
         csrf_token: str = Form(""),
         session: Session = Depends(get_session), user=Depends(require_publish),
     ):
@@ -816,6 +819,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         board = session.get(Storyboard, render_row.storyboard_id)
         script = session.get(Script, board.script_id) if board else None
         project_id_of_render = script.project_id if script else None
+
+        # Refuse here rather than inside the worker: a job that fails reports
+        # through the alert list, which nobody reads while clicking publish.
+        blocking = [
+            issue for issue in ((render_row.meta or {}).get("qc") or {}).get("issues", [])
+            if issue.get("severity") == "block"
+        ]
+        if blocking and not acknowledge_quality:
+            raise HTTPException(400, (
+                "品質チェックで修正が必要な項目があります: "
+                + " / ".join(i["what"] for i in blocking)
+                + "。修正して書き出し直すか、了承欄にチェックを入れてください。"
+            ))
         if not accounts and not platforms:
             raise HTTPException(400, "投稿先を1つ以上選んでください")
 
@@ -840,6 +856,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "account_ids": [int(a) for a in accounts if str(a).isdigit()],
             "scheduled_for": scheduled_for or None,
             "dry_run": False,
+            "skip_quality_gate": bool(acknowledge_quality),
         }, script.project_id if script else None,
            f"/scripts/{script.id}" if script else "/")
 

@@ -95,6 +95,13 @@ def explain(exc: BaseException) -> Explained:
             "未設定でも、簡易版の台本生成で動作は続きます。",
         )
 
+    if name == "QualityGateError":
+        return Explained(
+            "品質チェックで止めました", message,
+            "いずれも視聴者全員に見える不具合です。"
+            "修正して書き出し直すか、了承のうえで投稿してください。",
+        )
+
     if name == "FFmpegError":
         return Explained(
             "動画処理に失敗しました", message,

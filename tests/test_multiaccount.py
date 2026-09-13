@@ -1,5 +1,7 @@
 """Running several accounts per platform."""
 
+import subprocess
+
 import pytest
 
 from snsauto.config import Settings
@@ -23,8 +25,21 @@ def _account(session, platform, name, project_id=None, token=None, active=True):
 
 
 @pytest.fixture
-def render(session, project):
-    row = Render(storyboard_id=1, path="/tmp/v.mp4", duration_sec=10)
+def render(session, project, tmp_path):
+    # A real file: publishing runs the quality gate, and a path that does not
+    # exist is a blocking defect - correctly, since the upload would fail too.
+    video = tmp_path / "v.mp4"
+    from snsauto.media.ffmpeg import ffmpeg_path
+
+    subprocess.run(
+        [ffmpeg_path(), "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "color=c=black:s=1080x1920:d=1:r=30",
+         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+         "-t", "1", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-shortest",
+         str(video)],
+        check=True,
+    )
+    row = Render(storyboard_id=1, path=str(video), duration_sec=10)
     session.add(row)
     session.flush()
     return row
@@ -146,26 +161,57 @@ class TestPerAccountLimits:
         assert service.check_rate(Platform.TIKTOK, fresh.id)["allowed"] is True
 
     def test_a_capped_account_does_not_block_the_others(
-        self, session, project, render, script, pipeline
+        self, session, project, render, script, pipeline, monkeypatch
     ):
         from snsauto.models import PublishAttempt
         from snsauto.platforms.accounts import DAILY_POST_CAP
+        from snsauto.platforms.base import Capability, PublishResult
 
         busy = _account(session, Platform.TIKTOK, "busy")
-        _account(session, Platform.TIKTOK, "fresh")
+        fresh = _account(session, Platform.TIKTOK, "fresh")
         for _ in range(DAILY_POST_CAP[Platform.TIKTOK]):
             session.add(PublishAttempt(platform=Platform.TIKTOK,
                                        account_id=busy.id, succeeded=True))
         session.flush()
 
+        # Stub the adapter: the uncapped account now gets far enough to make a
+        # real API call, and a test must never leave the machine.
+        posted = []
+
+        class StubAdapter:
+            platform = Platform.TIKTOK
+
+            def capabilities(self):
+                return {Capability.PUBLISH}
+
+            def publish(self, request):
+                posted.append(request)
+                return PublishResult(external_id="posted-1",
+                                     url="https://tiktok.com/@x/video/1")
+
+        from snsauto.platforms.accounts import Credentials
+
+        def stub_adapter(platform, session_, settings_, project_id, account_id):
+            # Credentials must carry the account id: without it the rate check
+            # falls back to counting the whole platform, and one exhausted
+            # account would appear to cap every other one.
+            return StubAdapter(), Credentials(
+                access_token="t", account_id=account_id, source="connected"
+            )
+
+        monkeypatch.setattr("snsauto.pipeline.adapter_for_account", stub_adapter)
+
         publications = pipeline.publish(
             project, render, script, [Platform.TIKTOK], dry_run=False
         )
         by_account = {p.account_id: p for p in publications}
-        # The capped account is deferred, not failed; the other proceeds far
-        # enough to report a credential problem rather than a rate problem.
+
+        # Capped: deferred rather than failed, so the slot is retried later.
         assert by_account[busy.id].status == PublicationStatus.SCHEDULED
         assert "上限" in by_account[busy.id].error
+        # Uncapped: unaffected by the other account's exhausted quota.
+        assert by_account[fresh.id].status == PublicationStatus.PUBLISHED
+        assert len(posted) == 1
 
 
 class TestLabels:
