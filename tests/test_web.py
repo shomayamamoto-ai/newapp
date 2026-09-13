@@ -364,6 +364,54 @@ class TestActions:
                            data={"platforms": ["tiktok"], "confirm": "yes",
                                  "csrf_token": token}).status_code == 400
 
+    def test_publish_refuses_another_client_s_account(self, secure_env, tmp_path):
+        """The agency failure: A社の動画がB社の公式アカウントに出る。
+
+        Refused in the request, before a job is enqueued - a job that fails
+        inside the worker reports through the alert list, which nobody is
+        reading at the moment somebody clicks publish.
+        """
+        import snsauto.db as dbmod
+        from snsauto.models import (
+            Platform, Project, Render, Script, SocialAccount, Storyboard,
+        )
+
+        video = tmp_path / "cross.mp4"
+        video.write_bytes(b"\x00" * 8)
+        with dbmod.session_scope() as session:
+            other = Project(name="クライアントB社", brand_profile={})
+            mine = session.query(Project).first()
+            session.add(other)
+            session.flush()
+            script = session.query(Script).first() or Script(
+                project_id=mine.id, title="A社の台本", platform=Platform.YOUTUBE,
+                target_duration_sec=30.0, lines=[],
+            )
+            session.add(script)
+            session.flush()
+            board = Storyboard(script_id=script.id)
+            session.add(board)
+            session.flush()
+            render = Render(storyboard_id=board.id, path=str(video), duration_sec=5)
+            theirs = SocialAccount(
+                project_id=other.id, platform=Platform.YOUTUBE,
+                external_id="UC-B", display_name="B社の公式チャンネル",
+                access_token="t", is_active=True,
+            )
+            session.add_all([render, theirs])
+            session.flush()
+            render_id, account_id = render.id, theirs.id
+
+        client_for, _ = secure_env
+        client, token = client_for("admin@x.com")
+        response = client.post(
+            f"/renders/{render_id}/publish",
+            data={"accounts": [str(account_id)], "confirm": "PUBLISH",
+                  "csrf_token": token},
+        )
+        assert response.status_code == 400
+        assert "B社の公式チャンネル" in response.text
+
     def test_publish_needs_a_platform(self, secure_env, tmp_path):
         import snsauto.db as dbmod
         from snsauto.models import Render

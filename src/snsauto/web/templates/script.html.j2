@@ -75,7 +75,8 @@
     {% endif %}
   </div>
   <div class="f"><label for="psf">予約日時（空欄なら即時）</label>
-    <input id="psf" name="scheduled_for" type="datetime-local"></div>
+    <input id="psf" name="scheduled_for" type="datetime-local">
+      <span class="sub">{{ local_timezone }} の時刻として扱います</span></div>
   <div class="f"><label for="pc">確認のため PUBLISH と入力</label>
     <input id="pc" name="confirm" placeholder="PUBLISH" required style="width:120px"></div>
   <button class="btn">投稿する</button>

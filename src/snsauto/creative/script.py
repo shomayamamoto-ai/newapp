@@ -9,9 +9,19 @@ stays exercisable and the writer only has to fill in words.
 
 from __future__ import annotations
 
+import logging
+
+from .originality import (
+    MAX_REGENERATIONS,
+    avoid_instruction,
+    corpus_from_run,
+    review,
+)
 from ..models import Platform, ResearchRun, Script
 from ..research.keyword import summarize_corpus
 from ..platforms import PostRecord
+
+log = logging.getLogger(__name__)
 
 # Telop the viewer can read in one glance, per beat.
 DEFAULT_BEAT_SEC = 3.0
@@ -78,6 +88,52 @@ class ScriptService:
         self.session = session
         self.llm = llm
 
+    def _generate_original(
+        self, keyword, platform, duration, project, research, corpus
+    ) -> tuple[dict, dict]:
+        """Write the script, and rewrite it if it came back as a copy.
+
+        The generator is shown competitor copy on purpose, so overlap is a
+        foreseeable outcome rather than a surprise. The retry names the exact
+        phrases that matched, because "be more original" does not tell a model
+        what to change.
+
+        After the retries are spent the best attempt is kept and the finding is
+        recorded on the script, never silently dropped: a human has to be able
+        to see that this one needs reading before it goes out.
+        """
+        attempts: list[tuple[dict, dict]] = []
+        extra = ""
+        for _ in range(MAX_REGENERATIONS + 1):
+            data = self.llm.write_script(
+                keyword=keyword + extra,
+                platform=platform.value,
+                duration=duration,
+                brand_profile=project.brand_profile or {},
+                research=research,
+            )
+            result = review(data, corpus)
+            attempts.append((data, result))
+            if not result.get("checked") or result.get("clean"):
+                return data, result
+            extra = avoid_instruction(result["findings"])
+            log.info(
+                "script overlapped competitor copy (%s); regenerating",
+                result["findings"][0]["shared"],
+            )
+
+        # Nothing came back clean. Keep whichever attempt copied least.
+        data, result = min(
+            attempts, key=lambda pair: pair[1]["findings"][0]["shared_length"]
+        )
+        result["exhausted"] = True
+        result["attempts"] = len(attempts)
+        log.warning(
+            "script still overlaps competitor copy after %d attempts - flagged "
+            "for human review", len(attempts),
+        )
+        return data, result
+
     def generate(
         self,
         project,
@@ -90,16 +146,14 @@ class ScriptService:
         if research is None:
             research = summarize_corpus(_records_from_run(run)) if run else {"count": 0}
 
+        corpus = corpus_from_run(run)
         if self.llm is not None:
-            data = self.llm.write_script(
-                keyword=keyword,
-                platform=platform.value,
-                duration=duration,
-                brand_profile=project.brand_profile or {},
-                research=research,
+            data, originality = self._generate_original(
+                keyword, platform, duration, project, research, corpus
             )
         else:
             data = _fallback_script(keyword, duration, research)
+            originality = review(data, corpus)
 
         data["lines"] = self._repair_timing(data.get("lines", []), duration)
 
@@ -115,6 +169,7 @@ class ScriptService:
             lines=data["lines"],
             hashtags=data.get("hashtags", []),
             rationale=data.get("rationale"),
+            originality=originality,
         )
         self.session.add(script)
         self.session.flush()

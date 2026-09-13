@@ -48,7 +48,7 @@ from .platforms import (
     PublishRequest,
     adapter_for_account,
 )
-from .platforms.accounts import AccountService
+from .platforms.accounts import AccountService, assert_account_scope
 from .reporting.service import ReportService
 from .storage import StorageError, build_storage
 from .research.comments import CommentMiner
@@ -295,8 +295,13 @@ class Pipeline:
 
         for account_id in account_ids or []:
             account = self.session.get(SocialAccount, account_id)
-            if account is not None and account.is_active:
-                targets.append((account.platform, account.id))
+            if account is None or not account.is_active:
+                continue
+            # Checked here as well as in resolve(), because this is where a
+            # stale form, a copied URL or a mis-click turns into a public post
+            # on somebody else's account.
+            assert_account_scope(account, project.id)
+            targets.append((account.platform, account.id))
 
         for platform in platforms or []:
             connected = accounts.targets(platform, project.id)

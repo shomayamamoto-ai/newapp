@@ -3,6 +3,8 @@
 {% block subheading %}いまこのインストールで実際にできること{% endblock %}
 
 {% block content %}
+{% if db_warning %}<div class="note warn"><strong>要対応:</strong> {{ db_warning }}</div>{% endif %}
+{% if disk_warning %}<div class="note warn"><strong>要対応:</strong> {{ disk_warning }}</div>{% endif %}
 <h2>プラットフォーム</h2>
 <table>
   <thead><tr><th>プラットフォーム</th><th>検索</th><th>投稿</th><th>実績取得</th><th>必要なもの</th></tr></thead>

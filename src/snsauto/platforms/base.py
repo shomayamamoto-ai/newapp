@@ -103,12 +103,38 @@ class PublishRequest:
     scheduled_for: datetime | None = None
     extra: dict = field(default_factory=dict)
 
-    def full_caption(self, limit: int | None = None) -> str:
+    def full_caption(self, limit: int | None = None, weighted: bool = False) -> str:
+        """Caption plus hashtags, fitted to the platform's limit.
+
+        The hashtags are reserved first and the body absorbs the cut. Doing it
+        the other way - truncating the joined string - drops the tags entirely
+        whenever the body is long, which is exactly when discovery matters
+        most. ``weighted`` selects X's counting, where kana and kanji weigh
+        two and a 280-character Japanese post is over the limit.
+        """
+        from .captions import truncate_caption, weighted_length
+
+        measure = weighted_length if weighted else len
         tags = " ".join(
             t if t.startswith("#") else f"#{t}" for t in self.hashtags if t.strip()
         )
-        text = f"{self.caption}\n\n{tags}".strip() if tags else self.caption.strip()
-        return text[:limit] if limit else text
+        body = self.caption.strip()
+
+        if limit is None:
+            return f"{body}\n\n{tags}".strip() if tags else body
+
+        if not tags:
+            return truncate_caption(body, limit, weighted)
+
+        separator = "\n\n"
+        reserved = measure(separator) + measure(tags)
+        if reserved >= limit:
+            # No room for both. The tags alone are more use than a body with
+            # half a hashtag stuck to it.
+            return truncate_caption(tags, limit, weighted)
+
+        fitted = truncate_caption(body, limit - reserved, weighted)
+        return f"{fitted}{separator}{tags}".strip() if fitted else tags
 
 
 @dataclass(slots=True)

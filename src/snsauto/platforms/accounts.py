@@ -54,6 +54,33 @@ def _aware(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
+class AccountScopeError(RuntimeError):
+    """An account was addressed from a project it does not belong to."""
+
+
+def assert_account_scope(account, project_id: int | None) -> None:
+    """Refuse an account that belongs to a different project.
+
+    Raises rather than skipping. Silently dropping the target would publish to
+    fewer places than asked without saying why, and the operator would find out
+    from the client.
+
+    ``project_id is None`` on the account means it is deliberately shared
+    across projects, which stays allowed. ``project_id is None`` on the caller
+    means no project context was given - a CLI one-off - and the account's own
+    binding is then the only rule there is.
+    """
+    if account.project_id is None:
+        return
+    if project_id is not None and account.project_id != project_id:
+        raise AccountScopeError(
+            f"アカウント「{account.display_name or account.external_id}」は"
+            f"別のプロジェクト(id={account.project_id})に紐づいています。"
+            f"このプロジェクト(id={project_id})からは投稿できません。"
+            "プロジェクトと投稿先の組み合わせを確認してください。"
+        )
+
+
 class AccountService:
     def __init__(self, session, settings=None, provider_factory=None):
         from ..config import get_settings
@@ -106,6 +133,13 @@ class AccountService:
             account = self.session.get(SocialAccount, account_id)
             if account is None or not account.is_active:
                 return None
+            # An account bound to a different project must never be usable
+            # from this one. Naming an id is how a post reaches one of several
+            # accounts; it is not a way to reach past the project boundary.
+            # For an agency this is the difference between posting to the
+            # right client and posting one client's content on another's
+            # public account, which cannot be undone.
+            assert_account_scope(account, project_id)
             return self._credentials_for(account)
 
         found = self.accounts(platform, project_id)

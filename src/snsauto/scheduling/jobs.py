@@ -201,13 +201,14 @@ def _publish(runner, session, job, params) -> dict:
     project = session.get(Project, params["project_id"])
     render = session.get(Render, params["render_id"])
     script = session.get(Script, params["script_id"]) if params.get("script_id") else None
-    scheduled_for = params.get("scheduled_for")
-    if isinstance(scheduled_for, str) and scheduled_for:
-        from datetime import datetime
+    # The form sends wall-clock time with no zone attached. Reading it as UTC
+    # moves every scheduled post by the UTC offset.
+    from .worker import parse_local_datetime
 
-        scheduled_for = datetime.fromisoformat(scheduled_for)
-    else:
-        scheduled_for = None
+    scheduled_for = parse_local_datetime(
+        params.get("scheduled_for") if isinstance(params.get("scheduled_for"), str) else None,
+        runner.settings,
+    )
 
     publications = _pipeline(runner, session).publish(
         project, render, script,

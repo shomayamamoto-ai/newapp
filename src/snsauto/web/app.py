@@ -49,11 +49,17 @@ from . import auth as authlib
 from ..notify import AlertService
 from ..platforms import PostRecord, capability_matrix
 from ..platforms.base import METRIC_AVAILABILITY
-from ..platforms.accounts import AccountService
+from ..platforms.accounts import (
+    AccountScopeError,
+    AccountService,
+    assert_account_scope,
+)
 from ..platforms.oauth import OAuthError, get_provider, oauth_readiness
 from ..storage import build_storage, storage_status
 from ..reporting.templates import _fmt_dt, _fmt_dur, _fmt_int, _fmt_pct
 from ..analytics.pdca import METRIC_JA, posts_needed
+from ..db import db_permission_warning
+from ..workspace import warning as workspace_warning
 from ..analytics.stats import RELIABILITY_JA
 from ..research.audio import AUDIO_STYLE_JA
 from ..research.comments import summarize_comments
@@ -318,6 +324,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             metric_matrix=METRIC_AVAILABILITY, metric_labels=METRIC_JA,
             environment=_environment_report(settings),
             storage=storage_status(settings),
+            db_warning=db_permission_warning(settings.db_url),
+            disk_warning=workspace_warning(settings.workspace),
             mail_configured=bool(settings.smtp_host and settings.alert_email_to),
             alert_email_to=settings.alert_email_to,
         )
@@ -485,6 +493,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "script.html.j2", session, request, user, nav="project", project=script.project,
             page_title=script.title, script=script, storyboard=board,
             render=render_row, job_id=job, publish_targets=targets,
+            local_timezone=settings.timezone,
         )
 
     @app.get("/cycles/{cycle_id}", response_class=HTMLResponse)
@@ -800,11 +809,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # rather than a single click.
         if confirm != "PUBLISH":
             raise HTTPException(400, "確認欄に PUBLISH と入力してください")
-        if not accounts and not platforms:
-            raise HTTPException(400, "投稿先を1つ以上選んでください")
 
         board = session.get(Storyboard, render_row.storyboard_id)
         script = session.get(Script, board.script_id) if board else None
+        project_id_of_render = script.project_id if script else None
+        if not accounts and not platforms:
+            raise HTTPException(400, "投稿先を1つ以上選んでください")
+
+        # Refuse before enqueueing. A job that fails inside the worker reports
+        # through the alert list, which nobody reads at the moment of posting.
+        for raw in accounts:
+            if not str(raw).isdigit():
+                continue
+            account = session.get(SocialAccount, int(raw))
+            if account is None:
+                raise HTTPException(400, f"アカウント {raw} が見つかりません")
+            try:
+                assert_account_scope(account, project_id_of_render)
+            except AccountScopeError as exc:
+                raise HTTPException(400, str(exc)) from exc
+
         return _enqueue(session, "publish", {
             "project_id": script.project_id if script else None,
             "render_id": render_id,

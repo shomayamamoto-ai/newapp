@@ -40,6 +40,43 @@ log = logging.getLogger(__name__)
 CLAIM_TIMEOUT = timedelta(minutes=30)
 
 
+def local_zone(settings=None):
+    """The operator's timezone. Defaults to JST, never to UTC."""
+    from zoneinfo import ZoneInfo
+
+    name = getattr(settings, "timezone", None) or "Asia/Tokyo"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return timezone(timedelta(hours=9))
+
+
+def parse_local_datetime(raw: str | None, settings=None) -> datetime | None:
+    """Read a wall-clock string from a form as the operator's local time.
+
+    The browser's ``datetime-local`` input has no timezone in it: "20:00" means
+    twenty hundred on the clock in front of whoever typed it. Reading that as
+    UTC silently moves every scheduled post by the whole UTC offset - nine
+    hours in Japan, so a post aimed at the evening peak goes out at five the
+    next morning. The mistake is invisible until a client asks why.
+
+    Returns an aware UTC datetime, which is what the rest of the scheduler and
+    the database expect.
+    """
+    if not raw:
+        return None
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=local_zone(settings))
+    return parsed.astimezone(timezone.utc)
+
+
+def to_local(dt: datetime | None, settings=None) -> datetime | None:
+    """For display. A schedule shown in UTC cannot be checked by a human."""
+    aware = _aware(dt)
+    return aware.astimezone(local_zone(settings)) if aware else None
+
+
 def _aware(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None

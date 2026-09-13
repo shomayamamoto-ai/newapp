@@ -30,7 +30,7 @@ from .base import (
 
 API = "https://api.x.com/2"
 UPLOAD = "https://upload.twitter.com/1.1/media/upload.json"
-TWEET_MAX = 280
+TWEET_MAX = 280      # weighted, not characters - see captions.py
 CHUNK = 4 * 1024 * 1024
 
 
@@ -199,7 +199,9 @@ class XAdapter(BaseAdapter):
 
     def publish(self, request: PublishRequest) -> PublishResult:
         self._require(Capability.PUBLISH)
-        payload: dict = {"text": request.full_caption(limit=TWEET_MAX)}
+        # X counts weighted characters: kana and kanji are 2 each, so a
+        # Japanese post is over the limit at half the character count.
+        payload: dict = {"text": request.full_caption(limit=TWEET_MAX, weighted=True)}
 
         if request.video_path:
             if not os.path.exists(request.video_path):

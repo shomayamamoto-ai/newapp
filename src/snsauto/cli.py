@@ -34,6 +34,7 @@ footage_app = typer.Typer(help="Real / stock footage library.", no_args_is_help=
 worker_app = typer.Typer(help="Scheduled publishing and metrics collection.", no_args_is_help=True)
 ab_app = typer.Typer(help="A/B experiments.", no_args_is_help=True)
 user_app = typer.Typer(help="Web UI accounts.", no_args_is_help=True)
+workspace_app = typer.Typer(help="ワークスペースの容量確認と手動削除。", no_args_is_help=True)
 watch_app = typer.Typer(help="Watched competitors and trend diffs.", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
@@ -48,6 +49,7 @@ app.add_typer(footage_app, name="footage")
 app.add_typer(worker_app, name="worker")
 app.add_typer(ab_app, name="ab")
 app.add_typer(user_app, name="user")
+app.add_typer(workspace_app, name="workspace")
 
 console = Console()
 
@@ -200,6 +202,67 @@ def project_list():
             table.add_row(str(p.id), p.name, str(len(p.research_runs)),
                           str(len(p.scripts)), str(len(p.pdca_cycles)))
         console.print(table)
+
+
+# ---------------- workspace ----------------
+
+@workspace_app.command("usage")
+def workspace_usage():
+    """ワークスペースが何をどれだけ抱えているかを表示する。"""
+    from .workspace import free_bytes, usage, warning
+
+    settings = get_settings()
+    rows = usage(settings.workspace)
+    table = Table(title=str(settings.workspace), header_style="bold", title_justify="left")
+    table.add_column("種別"); table.add_column("内容", max_width=34)
+    table.add_column("件数", justify="right"); table.add_column("容量", justify="right")
+    table.add_column("最古", justify="right"); table.add_column("削除可")
+    for row in rows:
+        table.add_row(
+            row.category, row.label, str(row.files), f"{row.megabytes:,.1f}MB",
+            f"{row.oldest_days:.0f}日" if row.oldest_days else "-",
+            "[green]可[/green]" if row.disposable else "[yellow]要注意[/yellow]",
+        )
+    console.print(table)
+    free = free_bytes(settings.workspace)
+    if free is not None:
+        console.print(f"ディスク空き: {free / 1073741824:.1f}GB")
+    note = warning(settings.workspace)
+    if note:
+        console.print(f"[yellow]{note}[/yellow]")
+    console.print("[dim]自動削除は行いません。削除は `snsauto workspace clean` で明示的に実行してください。[/dim]")
+
+
+@workspace_app.command("clean")
+def workspace_clean(
+    older_than: float = typer.Option(0.0, "--older-than", help="この日数より古いファイルのみ"),
+    category: list[str] = typer.Option(None, "--category", "-c",
+                                       help="既定はキャッシュ系のみ。完成動画やレポートは対象外"),
+    apply: bool = typer.Option(False, "--apply", help="実際に削除する（既定は確認のみ）"),
+):
+    """キャッシュを手動で削除する。既定は削除内容の確認だけ。"""
+    from .workspace import apply_clean, plan_clean
+
+    settings = get_settings()
+    removals = plan_clean(settings.workspace, list(category) if category else None, older_than)
+    if not removals:
+        console.print("削除対象はありません。")
+        raise typer.Exit(0)
+
+    total = sum(r.bytes for r in removals)
+    console.print(f"対象 {len(removals)}件 / {total / 1048576:,.1f}MB")
+    for removal in removals[:10]:
+        console.print(f"  {removal.bytes / 1048576:>8,.1f}MB  {removal.age_days:>5.0f}日前  "
+                      f"{removal.path.name}")
+    if len(removals) > 10:
+        console.print(f"  [dim]... 他 {len(removals) - 10}件[/dim]")
+
+    if not apply:
+        console.print("\n[dim]確認のみです。実行するには --apply を付けてください。[/dim]")
+        raise typer.Exit(0)
+
+    count, freed = apply_clean(removals)
+    console.print(f"[green]{count}件 / {freed / 1048576:,.1f}MB を削除しました。[/green]")
 
 
 # ---------------- watch ----------------

@@ -274,6 +274,11 @@ class Script(Base, TimestampMixin):
     hashtags: Mapped[list] = mapped_column(JSON, default=list)
     rationale: Mapped[str | None] = mapped_column(Text)
 
+    # Whether any line came back matching a competitor's copy, and what
+    # matched. Recorded even when clean, so "not checked" and "checked and
+    # clean" stay distinguishable before a post goes out.
+    originality: Mapped[dict] = mapped_column(JSON, default=dict)
+
     project: Mapped[Project] = relationship(back_populates="scripts")
     storyboards: Mapped[list["Storyboard"]] = relationship(
         back_populates="script", cascade="all, delete-orphan"
