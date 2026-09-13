@@ -198,19 +198,19 @@ class VoiceService:
         # held longer than its line would shift every later line early.
         lengths = {s.index: (s.end - s.start) for s in storyboard.shots}
         track_path, total = None, sum(lengths.values())
-        if any(l.path for l in lines):
+        if any(line.path for line in lines):
             track_path = str(self._concat(lines, lengths, out_dir / "narration.m4a"))
             total = probe(track_path)["duration"]
 
         self.session.flush()
         return VoiceTrack(
             lines=lines, path=track_path, total_duration=total,
-            synthesized=any(l.synthesized for l in lines),
+            synthesized=any(line.synthesized for line in lines),
         )
 
     def _realign(self, storyboard: Storyboard, lines: list[VoiceLine]) -> None:
         """Re-tile the shots so each one lasts as long as its narration does."""
-        by_index = {l.index: l for l in lines}
+        by_index = {line.index: line for line in lines}
         cursor = 0.0
         for shot in storyboard.shots:
             line = by_index.get(shot.index)

@@ -72,7 +72,7 @@ def classify_hook(text: str | None) -> tuple[str, str | None]:
     if not text or not text.strip():
         return "unknown", None
     first_line = next(
-        (l.strip() for l in re.split(r"[\n。.!！?？]", text) if l.strip()), ""
+        (part.strip() for part in re.split(r"[\n。.!！?？]", text) if part.strip()), ""
     )
     probe_text = first_line or text[:120]
     for name, pattern in HOOK_PATTERNS:
@@ -84,7 +84,7 @@ def classify_hook(text: str | None) -> tuple[str, str | None]:
 def detect_cta(text: str | None) -> str | None:
     if not text:
         return None
-    for line in reversed([l.strip() for l in text.splitlines() if l.strip()]):
+    for line in reversed([row.strip() for row in text.splitlines() if row.strip()]):
         if CTA_PATTERNS.search(line):
             return line[:200]
     return None
@@ -140,8 +140,8 @@ def estimate_beats(duration: float, hook: str | None, cta: str | None) -> list[d
 
 def telop_profile(text: str | None, duration: float | None) -> dict:
     """Density statistics for on-screen text."""
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
-    lengths = [len(l) for l in lines]
+    lines = [row.strip() for row in (text or "").splitlines() if row.strip()]
+    lengths = [len(row) for row in lines]
     return {
         "line_count": len(lines),
         "avg_chars": round(statistics.fmean(lengths), 1) if lengths else 0.0,

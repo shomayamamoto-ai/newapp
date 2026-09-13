@@ -200,7 +200,7 @@ class ScriptService:
         """
         if not lines:
             return lines
-        ordered = sorted(lines, key=lambda l: (l.get("start", 0), l.get("index", 0)))
+        ordered = sorted(lines, key=lambda row: (row.get("start", 0), row.get("index", 0)))
         cursor = 0.0
         repaired = []
         for i, line in enumerate(ordered):

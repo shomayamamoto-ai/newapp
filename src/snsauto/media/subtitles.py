@@ -180,7 +180,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for cue in cues:
         if cue.end <= cue.start or not cue.text.strip():
             continue
-        body = "\\N".join(_escape(l) for l in wrap_text(cue.text, style.max_width))
+        body = "\\N".join(_escape(part) for part in wrap_text(cue.text, style.max_width))
         fade = f"{{\\fad({style.fade_ms},{style.fade_ms})}}" if style.fade_ms else ""
         lines.append(
             f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},"

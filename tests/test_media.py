@@ -18,7 +18,7 @@ class TestWrapText:
     def test_wraps_japanese_without_spaces(self):
         lines = wrap_text("これは日本語のテロップです。改行を確認します。", 10)
         assert len(lines) > 1
-        assert all(display_width(l) <= 12 for l in lines)
+        assert all(display_width(line) <= 12 for line in lines)
 
     def test_never_starts_a_line_with_closing_punctuation(self):
         for line in wrap_text("テストです。もう一度テストです。さらに続きます。", 8):

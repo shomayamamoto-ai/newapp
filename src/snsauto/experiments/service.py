@@ -267,7 +267,7 @@ class ExperimentService:
         """Stretch or compress beats to a new runtime, keeping them contiguous."""
         if not lines:
             return lines
-        original = max((l.get("end", 0) for l in lines), default=0) or target
+        original = max((row.get("end", 0) for row in lines), default=0) or target
         factor = target / original
         cursor = 0.0
         out = []

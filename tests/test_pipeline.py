@@ -99,7 +99,7 @@ class TestScriptTiming:
         fixed = ScriptService._repair_timing(
             [{"index": 9, "start": 0, "end": 2}, {"index": 4, "start": 2, "end": 4}], 4.0
         )
-        assert [l["index"] for l in fixed] == [0, 1]
+        assert [row["index"] for row in fixed] == [0, 1]
 
     def test_repair_handles_empty(self):
         assert ScriptService._repair_timing([], 10.0) == []

@@ -95,7 +95,7 @@ class TestVariantGeneration:
             project, "telop", base_script, "telop_density", arms=2
         )
         control, treated = experiment.variants
-        filled = lambda s: len([l for l in s.lines if l.get("telop")])  # noqa: E731
+        filled = lambda s: len([row for row in s.lines if row.get("telop")])  # noqa: E731
         assert filled(treated.script) < filled(control.script)
 
     def test_cta_arm_changes_only_the_closing_line(self, session, project, base_script):

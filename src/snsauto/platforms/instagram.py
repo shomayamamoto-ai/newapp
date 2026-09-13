@@ -308,21 +308,6 @@ class InstagramAdapter(BaseAdapter):
         record.raw["insights"] = values
         return record
 
-    def retention_for(self, external_id: str, duration_sec: float | None) -> float | None:
-        """Average watch time as a fraction of the reel's length.
-
-        Instagram reports the seconds but never the ratio, and the ratio is
-        what compares across reels of different lengths. Needs the duration
-        from our own publication record, because the insights edge does not
-        carry it either.
-        """
-        if not duration_sec:
-            return None
-        record = self.fetch_metrics(external_id)
-        if record.avg_watch_sec is None:
-            return None
-        return min(1.0, record.avg_watch_sec / duration_sec)
-
     # ---------- plumbing ----------
 
     def _get(self, url: str, params: dict) -> dict:

@@ -161,8 +161,10 @@ def doctor():
     matrix = capability_matrix(settings)
 
     table = Table(title="プラットフォーム", header_style="bold", title_justify="left")
-    table.add_column("媒体"); table.add_column("検索", justify="center")
-    table.add_column("投稿", justify="center"); table.add_column("実績", justify="center")
+    table.add_column("媒体")
+    table.add_column("検索", justify="center")
+    table.add_column("投稿", justify="center")
+    table.add_column("実績", justify="center")
     table.add_column("足りないもの", max_width=46)
     todo: list[str] = []
     for platform, caps in matrix.items():
@@ -286,8 +288,10 @@ def metrics_retention(publication_id: int):
 
         console.print(f"[bold]{report['summary']}[/bold]\n")
         table = Table(title="離脱点", header_style="bold", title_justify="left")
-        table.add_column("時刻", justify="right"); table.add_column("離脱", justify="right")
-        table.add_column("残存", justify="right"); table.add_column("その時の画面", max_width=52)
+        table.add_column("時刻", justify="right")
+        table.add_column("離脱", justify="right")
+        table.add_column("残存", justify="right")
+        table.add_column("その時の画面", max_width=52)
         for fall in report["drop_offs"]:
             shot = fall.get("on_screen") or {}
             telop = (shot.get("telop") or "").replace("\n", " ")
@@ -316,9 +320,12 @@ def workspace_usage():
     settings = get_settings()
     rows = usage(settings.workspace)
     table = Table(title=str(settings.workspace), header_style="bold", title_justify="left")
-    table.add_column("種別"); table.add_column("内容", max_width=34)
-    table.add_column("件数", justify="right"); table.add_column("容量", justify="right")
-    table.add_column("最古", justify="right"); table.add_column("削除可")
+    table.add_column("種別")
+    table.add_column("内容", max_width=34)
+    table.add_column("件数", justify="right")
+    table.add_column("容量", justify="right")
+    table.add_column("最古", justify="right")
+    table.add_column("削除可")
     for row in rows:
         table.add_row(
             row.category, row.label, str(row.files), f"{row.megabytes:,.1f}MB",
@@ -860,8 +867,10 @@ def footage_index(
         assets = FootageLibrary(session).index(directory)
         console.print(f"[green]素材を{len(assets)}件索引しました[/green]")
         table = Table(header_style="bold")
-        table.add_column("file"); table.add_column("dur", justify="right")
-        table.add_column("size"); table.add_column("keywords")
+        table.add_column("file")
+        table.add_column("dur", justify="right")
+        table.add_column("size")
+        table.add_column("keywords")
         for asset in assets[:25]:
             table.add_row(
                 Path(asset.path).name, f"{asset.duration_sec:.1f}s",
@@ -878,8 +887,10 @@ def footage_list():
 
     with session_scope() as session:
         table = Table(header_style="bold")
-        table.add_column("id", justify="right"); table.add_column("file")
-        table.add_column("dur", justify="right"); table.add_column("vertical")
+        table.add_column("id", justify="right")
+        table.add_column("file")
+        table.add_column("dur", justify="right")
+        table.add_column("vertical")
         table.add_column("keywords")
         for asset in session.query(ClipAsset).order_by(ClipAsset.id):
             table.add_row(
@@ -957,7 +968,8 @@ def ab_create(
         )
         console.print(f"[green]A/Bテスト {experiment.id} を作成しました[/green]: {experiment.name}")
         table = Table(header_style="bold")
-        table.add_column("arm"); table.add_column("script", justify="right")
+        table.add_column("arm")
+        table.add_column("script", justify="right")
         table.add_column("treatment")
         for variant in experiment.variants:
             detail = ", ".join(
@@ -1032,8 +1044,11 @@ def user_list():
     init_db()
     with session_scope() as session:
         table = Table(header_style="bold")
-        table.add_column("id", justify="right"); table.add_column("email")
-        table.add_column("role"); table.add_column("active"); table.add_column("last login")
+        table.add_column("id", justify="right")
+        table.add_column("email")
+        table.add_column("role")
+        table.add_column("active")
+        table.add_column("last login")
         for user in session.query(User).order_by(User.id):
             table.add_row(
                 str(user.id), user.email, user.role,
