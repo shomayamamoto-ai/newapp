@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import stat
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,7 +18,49 @@ from .models import Base
 log = logging.getLogger(__name__)
 
 _engine = None
+
+# init_db() がこのプロセスで新しく作ったDBファイル。無ければ None。
+created_database: Path | None = None
 _Session: sessionmaker[Session] | None = None
+
+
+class DatabaseLocationError(RuntimeError):
+    """DBファイルを置けない場所が指定されている。"""
+
+
+def _prepare_sqlite_dir(path: Path) -> None:
+    """DBファイルの置き場所を用意し、書けなければ理由と直し方を出す。
+
+    何もしないと、SQLite の "unable to open database file" や
+    FileExistsError がそのまま出て、原因が「DBの場所」だと分からない。
+    同梱の systemd ユニットは ProtectSystem=strict で /opt/snsauto/data しか
+    書けないため、DBの場所を相対パスのままにするとここで止まる。
+    """
+    folder = path.parent
+    location = folder.resolve() if folder.exists() else folder.absolute()
+    hint = (
+        "SNSAUTO_DB_URL に、書き込めるフォルダの絶対パスを指定してください"
+        "（同梱の systemd ユニットでは sqlite:////opt/snsauto/data/snsauto.db）。"
+    )
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError) as exc:
+        raise DatabaseLocationError(
+            f"データベースの置き場所 {location} がフォルダではありません。{hint}"
+        ) from exc
+    except PermissionError as exc:
+        raise DatabaseLocationError(
+            f"データベースの置き場所 {location} を作成できません（権限がありません）。{hint}"
+        ) from exc
+    except OSError as exc:
+        # 読み取り専用のファイルシステム（ProtectSystem=strict を含む）
+        raise DatabaseLocationError(
+            f"データベースの置き場所 {location} に書き込めません（{exc.strerror}）。{hint}"
+        ) from exc
+    if not path.exists() and not os.access(folder, os.W_OK):
+        raise DatabaseLocationError(
+            f"データベースの置き場所 {location} に書き込めません。{hint}"
+        )
 
 
 def get_engine():
@@ -26,7 +69,7 @@ def get_engine():
         settings = get_settings()
         url = settings.db_url
         if url.startswith("sqlite:///"):
-            Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
+            _prepare_sqlite_dir(Path(url.removeprefix("sqlite:///")))
         _engine = create_engine(url, future=True)
         _Session = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
     return _engine
@@ -57,6 +100,38 @@ def sqlite_path(url: str | None = None) -> Path | None:
         return None
     _, _, tail = url.partition("///")
     return Path(tail) if tail else None
+
+
+def database_label(url: str | None = None) -> str:
+    """どのDBを見ているかを、人が読める形で。
+
+    SQLite は絶対パスにする。既定値は起動したフォルダからの相対パスなので、
+    相対のまま出しても「どこの workspace か」が分からない。それ以外の URL は
+    パスワードを伏せる。
+    """
+    url = url or get_settings().db_url
+    path = sqlite_path(url)
+    if path is not None:
+        return str(path.resolve())
+    from sqlalchemy.engine import make_url
+
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:  # noqa: BLE001 - 読めないURLでも、表示のために落とさない
+        return "（読み取れないURL）"
+
+
+def new_database_notice() -> str | None:
+    """このプロセスで空のDBを作ったなら、その旨と場所。"""
+    if created_database is None:
+        return None
+    return (
+        f"新しいデータベースを作成しました: {created_database}\n"
+        "以前のデータが見えない場合は、別のフォルダから起動しているか、"
+        "SNSAUTO_DB_URL の名前・値が違っています。常に同じDBを使うには、"
+        "SNSAUTO_DB_URL を絶対パスで指定してください"
+        "（例: sqlite:////srv/snsauto/snsauto.db）。"
+    )
 
 
 def secure_db_file(url: str | None = None) -> str | None:
@@ -115,6 +190,23 @@ def init_db() -> None:
     stamp; stamping it rather than upgrading avoids trying to re-create what
     is already there.
     """
+    global created_database
+    path = sqlite_path()
+    was_missing = path is not None and not path.exists()
+    try:
+        _init_schema()
+    finally:
+        # この起動で空のDBが新しくできた。初回なら正常だが、別のフォルダから
+        # 起動した・DBの場所の設定名を打ち間違えた、でも同じことが起き、
+        # その場合は既存のデータがすべて消えたように見える。区別はここでは
+        # できないので、場所を明示して知らせる（new_database_notice）。
+        # 実際にできたときだけ。作れずに失敗したのに「作成しました」と
+        # 出すと、原因の表示と矛盾する。
+        if was_missing and path is not None and path.exists():
+            created_database = path.resolve()
+
+
+def _init_schema() -> None:
     engine = get_engine()
     if not ALEMBIC_INI.exists():
         Base.metadata.create_all(engine)

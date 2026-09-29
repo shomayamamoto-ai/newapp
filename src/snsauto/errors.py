@@ -68,6 +68,12 @@ def explain(exc: BaseException) -> Explained:
         return Explained("接続情報がありません", message,
                          "`snsauto doctor` で不足しているものを確認できます。")
 
+    if name == "DatabaseLocationError":
+        return Explained(
+            "データベースを置けません", message,
+            "`snsauto doctor` で、いま見ているデータの場所を確認できます。",
+        )
+
     if name == "CapabilityUnavailable":
         return Explained(
             "このプラットフォームでは利用できない機能です", message,

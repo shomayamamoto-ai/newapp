@@ -23,11 +23,25 @@ from .platforms import capability_matrix
 from .platforms.tiktok import TikTokAdapter
 from .reporting.templates import TemplateRegistry, list_templates
 
-app = typer.Typer(
+class _SnsApp(typer.Typer):
+    """``app()`` と ``main()`` のどちらで起動しても同じ動きにする。
+
+    pyproject の入口は ``snsauto.cli:main`` だが、入口を変える前にインストール
+    された環境ではコンソールスクリプトが ``app()`` を直接呼ぶ。再インストール
+    するまで、エラーの日本語説明も設定名の警告も新しいDBの通知も一切出ない。
+    実際にこのツールの開発環境で起きていた。入口の記述に頼らず、呼ばれた
+    時点で必ず同じ処理を通す。
+    """
+
+    def __call__(self, *args, **kwargs):
+        return _run(lambda: super(_SnsApp, self).__call__(*args, **kwargs))
+
+
+app = _SnsApp(
     help="SNS運用自動化ツール — 競合調査から台本・動画・投稿・PDCAまで。",
     no_args_is_help=True,
     # Rich's traceback is for the people who wrote this, not the people who
-    # run it. Failures are explained by `main()` below instead.
+    # run it. Failures are explained by `_run()` below instead.
     pretty_exceptions_enable=False,
 )
 project_app = typer.Typer(help="プロジェクト（クライアント／ブランド）の管理。", no_args_is_help=True)
@@ -63,6 +77,8 @@ app.add_typer(setup_app, name="setup")
 app.add_typer(edit_app, name="edit")
 
 console = Console()
+# 警告は stderr に出す。JSON出力をパイプしている利用者の結果を汚さないため。
+err_console = Console(stderr=True)
 
 
 def _get_project(session, name: str) -> Project:
@@ -104,7 +120,13 @@ def serve(
     settings = get_settings()
     settings.ensure_workspace()
     init_db()
-    console.print(f"[green]起動しました:[/green] http://{host}:{port}")
+    from .db import database_label
+
+    # worker の起動表示と同じ場所を出す。journalctl で並べて、同じDBを
+    # 見ているかを確かめられるように。
+    console.print(
+        f"[green]起動しました:[/green] http://{host}:{port}（DB {database_label()}）"
+    )
     uvicorn.run(
         "snsauto.web.app:create_app",
         host=host, port=port, reload=reload, factory=True,
@@ -217,6 +239,28 @@ def doctor():
     note = workspace_warning(settings.workspace)
     if note:
         console.print(f"\n[yellow]{note}[/yellow]")
+
+    # どのデータを見ているか。既定の場所は起動フォルダからの相対なので、
+    # 別の場所から起動すると別の（空の）DBになる。
+    from .config import unknown_settings
+    from .db import database_label, sqlite_path
+
+    console.print("\n[bold]データの場所[/bold]")
+    console.print(f"  データベース  {database_label()}")
+    console.print(f"  作業フォルダ  {Path(settings.workspace).resolve()}")
+    path = sqlite_path()
+    if path is not None and not Path(path).is_absolute():
+        console.print(
+            "  [yellow]起動したフォルダからの相対パスです。別の場所から起動すると"
+            "別のDBになります。SNSAUTO_DB_URL を絶対パスで指定すると確実です。[/yellow]"
+        )
+
+    unread = unknown_settings(strict=True)
+    if unread:
+        console.print("\n[bold]読まれていない設定名[/bold]")
+        for key, suggestion, origin in unread:
+            hint = f" → {suggestion} の間違い？" if suggestion else ""
+            console.print(f"  [yellow]{key}[/yellow]  （{origin}）{hint}")
 
     console.print("\n[bold]次にやること[/bold]")
     if todo:
@@ -939,10 +983,36 @@ def worker_run(
     engine = get_engine()
     worker = Worker(lambda: SASession(engine, expire_on_commit=False), settings)
 
+    # ワーカーは systemd や cron など、Web UI とは別の場所から起動される
+    # ことが多い。既定のDBは起動フォルダからの相対パスなので、そのままだと
+    # 別のDBを見て「予約が0件」のまま回り続け、予約投稿は永遠に出ない。
+    # 見ているDBを毎回ログに残し、空なら警告する。
+    from .db import database_label, session_scope
+    from .models import Project, Publication, PublicationStatus
+
+    with session_scope() as session:
+        projects = session.query(Project).count()
+        scheduled = session.query(Publication).filter_by(
+            status=PublicationStatus.SCHEDULED).count()
+    logging.getLogger("snsauto.worker").info(
+        "database: %s (projects=%d, scheduled=%d)",
+        database_label(), projects, scheduled,
+    )
+    if projects == 0:
+        err_console.print(
+            f"[yellow]このワーカーが見ているDBにはプロジェクトがありません: "
+            f"{database_label()}\nWeb UI と同じDBか確認してください。"
+            "別の場所から起動している場合は SNSAUTO_DB_URL を絶対パスで"
+            "指定してください。[/yellow]"
+        )
+
     if once:
         console.print_json(json.dumps(worker.tick(), default=str))
         return
-    console.print(f"[green]ワーカー[/green] {worker.identity} を開始しました")
+    console.print(
+        f"[green]ワーカー[/green] {worker.identity} を開始しました"
+        f"（予約 {scheduled}件 / DB {database_label()}）"
+    )
     worker.run(interval)
 
 
@@ -1159,21 +1229,59 @@ def edit_trim(
 @edit_app.command("notation")
 def edit_notation(
     project: str = typer.Argument(..., help="表記辞書を持つプロジェクト"),
-    text: str = typer.Argument(None, help="変換するテキスト（省略すると辞書の表示のみ）"),
+    text: str = typer.Argument(None, help="変換を試すテキスト"),
+    add: list[str] = typer.Option(
+        [], "--add", help="追加する組。「アストラ=Astra」の形（複数指定可）"
+    ),
+    remove: list[str] = typer.Option([], "--remove", help="削除する入力語（複数指定可）"),
+    except_: list[str] = typer.Option(
+        [], "--except", help="置き換えない語を追加（複数指定可）"
+    ),
 ):
-    """表記ゆれを統一する。辞書はプロジェクトのブランド設定に持たせます。"""
+    """表記ゆれの辞書を表示・編集し、変換を試す。
+
+    辞書はブランド設定に保存され、Web UI のブランド設定画面と共有されます。
+    """
     init_db()
-    from .creative.notation import NotationRules
+    from .creative.notation import (
+        EXCEPTION_KEY, NOTATION_KEY, NotationRules, parse_mapping,
+    )
 
     with session_scope() as session:
         proj = _get_project(session, project)
-        rules = NotationRules.from_project(proj)
+        profile = dict(proj.brand_profile or {})
+
+        if add or remove or except_:
+            additions, errors = parse_mapping("\n".join(add))
+            if errors:
+                raise typer.BadParameter(" / ".join(errors))
+            mapping = dict(profile.get(NOTATION_KEY) or {})
+            missing = [word for word in remove if word not in mapping]
+            if missing:
+                raise typer.BadParameter(
+                    f"辞書に無い語は削除できません: {', '.join(missing)}"
+                )
+            for word in remove:
+                mapping.pop(word)
+            mapping.update(additions)
+            exceptions = list(profile.get(EXCEPTION_KEY) or [])
+            exceptions += [w for w in except_ if w not in exceptions]
+
+            for key, value in ((NOTATION_KEY, mapping), (EXCEPTION_KEY, exceptions)):
+                if value:
+                    profile[key] = value
+                else:
+                    profile.pop(key, None)
+            proj.brand_profile = profile
+            console.print("[green]表記辞書を更新しました[/green]")
+
+        rules = NotationRules(profile.get(NOTATION_KEY), profile.get(EXCEPTION_KEY))
 
     if not rules:
         console.print(
             "[yellow]このプロジェクトに表記指定がありません。[/yellow]\n"
-            "[dim]ブランド設定の notation に "
-            '{"アストラ": "Astra", "プレミア": "Premiere"} のように入れてください。[/dim]'
+            "[dim]`--add アストラ=Astra` で追加するか、Web UI のブランド設定から"
+            "入れてください。[/dim]"
         )
         return
 
@@ -1184,13 +1292,12 @@ def edit_notation(
         table.add_row(source, target)
     console.print(table)
     if rules.exceptions:
-        console.print(f"[dim]除外語: {'、'.join(rules.exceptions)}[/dim]")
+        console.print(f"[dim]置き換えない語: {'、'.join(rules.exceptions)}[/dim]")
 
     if text:
         result = rules.apply(text)
         console.print(f"\n{result.text}")
         console.print(f"[dim]{result.summary_ja()}[/dim]")
-
 
 # ---------------- setup ----------------
 
@@ -1444,8 +1551,36 @@ def account_limits():
         )
 
 
-def main() -> None:
-    """Entry point. Explains failures instead of printing a traceback.
+def _warn_unknown_settings() -> None:
+    """読まれていない設定名を、正しい名前の候補つきで知らせる。
+
+    設定は extra="ignore" で読んでいるため、名前を打ち間違えると黙って
+    既定値が使われる。SNSAUTO_DB_URL なら別のDBに書かれ、トークンなら
+    「未設定」と表示されて原因が分からない。
+    """
+    from .config import unknown_settings
+
+    try:
+        found = unknown_settings()
+    except Exception:  # noqa: BLE001 - 警告の失敗で本体を止めない
+        return
+    for key, suggestion, origin in found:
+        hint = f" → 「{suggestion}」の間違いではありませんか" if suggestion else ""
+        err_console.print(
+            f"[yellow]設定名「{key}」は読まれていません（{origin}）{hint}[/yellow]"
+        )
+
+
+def _print_new_database_notice() -> None:
+    from .db import new_database_notice
+
+    notice = new_database_notice()
+    if notice:
+        err_console.print(f"\n[yellow]{notice}[/yellow]")
+
+
+def _run(invoke) -> None:
+    """Explains failures instead of printing a traceback.
 
     `--debug` anywhere on the command line re-raises, so the full trace is
     still one flag away when it is actually wanted.
@@ -1457,11 +1592,16 @@ def main() -> None:
     debug = "--debug" in sys.argv
     if debug:
         sys.argv = [a for a in sys.argv if a != "--debug"]
+    _warn_unknown_settings()
     try:
-        app()
+        invoke()
     except (typer.Exit, typer.Abort, SystemExit, click.exceptions.ClickException):
+        # 空の一覧のすぐ下に出す。「プロジェクトが無い」と思った利用者が
+        # 見ているのがそこなので。
+        _print_new_database_notice()
         raise
     except BaseException as exc:  # noqa: BLE001 - this is the boundary
+        _print_new_database_notice()
         if debug:
             raise
         explained = explain(exc)
@@ -1475,7 +1615,12 @@ def main() -> None:
             for line in explained.fix.split("\n"):
                 console.print(f"  [yellow]{line}[/yellow]" if line.strip() else "")
         raise SystemExit(1) from None
+    _print_new_database_notice()
 
+
+def main() -> None:
+    """Entry point. ``app()`` does the same thing; see ``_SnsApp``."""
+    app()
 
 if __name__ == "__main__":
     main()

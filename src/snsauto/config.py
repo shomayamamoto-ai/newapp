@@ -162,3 +162,86 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# ---------- 設定名の打ち間違い ----------
+#
+# model_config は extra="ignore" なので、知らない名前は**黙って無視される**。
+# 無視されるのが SNSAUTO_DB_URL の打ち間違いなら、データは既定の場所に
+# 書かれ、利用者は指定したつもりの場所を見に行って何も無いことに驚く。
+# 実際にこのツールの開発中に SNSAUTO_DATABASE_URL と書いて同じことが起きた。
+# 無視はやめずに（他のツールと .env を共有する使い方を壊さないため）、
+# 気づける形で知らせる。
+
+OWN_PREFIX = "SNSAUTO_"
+
+
+def known_setting_names() -> set[str]:
+    names = set()
+    for name, info in Settings.model_fields.items():
+        names.add(info.alias or name.upper())
+    return names
+
+
+def _env_file_keys(path: Path) -> list[str]:
+    keys = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return keys
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if key:
+            keys.append(key)
+    return keys
+
+
+def unknown_settings(
+    environ: dict | None = None, env_file: Path | None = Path(".env"),
+    strict: bool = False,
+) -> list[tuple[str, str | None, str]]:
+    """読まれていない設定名と、近い正しい名前。
+
+    返すのは (名前, 候補, 出どころ)。
+
+    ``strict`` が偽のとき（毎回の起動時の警告）は、明らかにこのツール宛てと
+    言えるものだけを返す: ``SNSAUTO_`` で始まるもの、または既知の名前と
+    ほぼ同じもの。.env を他のツールと共有していても騒がないため。
+    ``strict`` が真のとき（``snsauto doctor``）は、.env にある知らない名前を
+    すべて返す。
+    """
+    import difflib
+    import os
+
+    known = known_setting_names()
+    environ = os.environ if environ is None else environ
+    # (名前, 出どころ, .env由来か)。プロセスの環境変数には PATH など無関係な
+    # ものが大量にあるので、strict でも「このツール宛て」と言えるものに限る。
+    # .env はこのツールの設定ファイルなので、strict なら全部を見る。
+    candidates: list[tuple[str, str, bool]] = [(key, "環境変数", False) for key in environ]
+    if env_file is not None and env_file.exists():
+        candidates += [(key, str(env_file), True) for key in _env_file_keys(env_file)]
+
+    ordered = sorted(known)
+    found: list[tuple[str, str | None, str]] = []
+    seen: set[str] = set()
+    for key, origin, from_file in candidates:
+        if key in known or key in seen:
+            continue
+        close = difflib.get_close_matches(key, ordered, n=1, cutoff=0.6)
+        suggestion = close[0] if close else None
+        # 既知の名前とほぼ同じ（YOUTUBE_CLIENT_SECERT など）なら、接頭辞に
+        # 関係なく打ち間違いとみなす。
+        near_miss = suggestion is not None and (
+            difflib.SequenceMatcher(None, key, suggestion).ratio() >= 0.85
+        )
+        ours = key.startswith(OWN_PREFIX) or near_miss
+        if ours or (strict and from_file):
+            seen.add(key)
+            found.append((key, suggestion, origin))
+    return found

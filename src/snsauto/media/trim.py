@@ -329,12 +329,33 @@ def _keep_segments(duration: float, cuts: list[Gap]) -> list[tuple[float, float]
     return [(s, e) for s, e in segments if e - s > 0.001]
 
 
-def apply_trim(plan: TrimPlan, destination: str | Path) -> Path:
-    """計画どおりに詰めた動画を書き出す。
+def _concat_graph(keep: list[tuple[float, float]]) -> str:
+    """残す区間を切り出して連結するフィルタグラフ。
 
-    ``select``/``aselect`` の一回のフィルタで済ませている。中間ファイルを
-    作らないので、素材が長くてもディスクを食わない。
+    区間ごとに ``trim``/``atrim`` で切り、``PTS-STARTPTS`` で各区間の時刻を
+    0 から振り直してから ``concat`` する。フレームの**実際の時刻**を使うので、
+    可変フレームレートの素材でも映像と音声が揃う。
+
+    以前は ``select`` + ``setpts=N/FRAME_RATE/TB`` だった。これはフレームが
+    等間隔に並んでいる前提で時刻を作り直すため、スマホで撮った可変フレーム
+    レートの素材では、5.6秒の素材で映像 2.72秒・音声 4.65秒と 1.9秒ずれた。
+    talking head では口と声が合わなくなる。
     """
+    parts, labels = [], []
+    for index, (start, end) in enumerate(keep):
+        parts.append(
+            f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[v{index}]"
+        )
+        parts.append(
+            f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[a{index}]"
+        )
+        labels.append(f"[v{index}][a{index}]")
+    parts.append(f"{''.join(labels)}concat=n={len(keep)}:v=1:a=1[v][a]")
+    return ";".join(parts)
+
+
+def apply_trim(plan: TrimPlan, destination: str | Path) -> Path:
+    """計画どおりに詰めた動画を書き出す。中間ファイルは作らない。"""
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -343,17 +364,14 @@ def apply_trim(plan: TrimPlan, destination: str | Path) -> Path:
         run_ffmpeg(["-y", "-i", plan.source, "-c", "copy", str(destination)])
         return destination
 
-    # 終端は排他。``between(t,a,b)`` は両端を含むため、区間ごとに1フレーム
-    # ずつ余分に残り、区間数ぶん尺が伸びる（30fpsで3区間なら0.1秒）。
-    expression = "+".join(
-        f"(gte(t,{start:.3f})*lt(t,{end:.3f}))" for start, end in plan.keep
-    )
     run_ffmpeg([
         "-y", "-i", plan.source,
-        "-vf", f"select='{expression}',setpts=N/FRAME_RATE/TB",
-        "-af", f"aselect='{expression}',asetpts=N/SR/TB",
+        "-filter_complex", _concat_graph(plan.keep),
+        "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        # 先頭の moov で、アップロード先がダウンロード完了を待たずに読める。
+        "-movflags", "+faststart",
         str(destination),
     ])
     return destination

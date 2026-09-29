@@ -121,3 +121,58 @@ class TestProjectWiring:
             brand_profile = {}
 
         assert not NotationRules.from_project(Bare())
+
+
+class TestWrittenByPeople:
+    """画面とCLIで人が書く「アストラ → Astra」の形。"""
+
+    def test_every_common_separator_is_accepted(self):
+        from snsauto.creative.notation import parse_mapping
+
+        text = "アストラ → Astra\nプレミア=Premiere\nA -> B\nC=>D\nE＝F\nG\tH"
+        mapping, errors = parse_mapping(text)
+        assert errors == []
+        assert mapping == {"アストラ": "Astra", "プレミア": "Premiere",
+                           "A": "B", "C": "D", "E": "F", "G": "H"}
+
+    def test_brackets_people_paste_from_the_brief_are_stripped(self):
+        """指示文の「アストラ」は「Astra」と表記 をそのまま貼る人がいる。"""
+        from snsauto.creative.notation import parse_mapping
+
+        mapping, _ = parse_mapping("「アストラ」→「Astra」")
+        assert mapping == {"アストラ": "Astra"}
+
+    def test_unreadable_lines_are_reported_not_dropped(self):
+        from snsauto.creative.notation import parse_mapping
+
+        mapping, errors = parse_mapping("アストラ → Astra\n区切りなし\nX → X")
+        assert mapping == {"アストラ": "Astra"}
+        assert len(errors) == 2
+        assert "2行目" in errors[0] and "3行目" in errors[1]
+
+    def test_a_conflicting_repeat_is_reported(self):
+        """同じ語を2通りに書いたら、どちらが効くか分からないので止める。"""
+        from snsauto.creative.notation import parse_mapping
+
+        _, errors = parse_mapping("アストラ → Astra\nアストラ → ASTRA")
+        assert errors and "既に" in errors[0]
+
+    def test_comments_and_blank_lines_are_skipped(self):
+        from snsauto.creative.notation import parse_mapping
+
+        mapping, errors = parse_mapping("# 表記指定\n\nアストラ → Astra\n")
+        assert mapping == {"アストラ": "Astra"} and errors == []
+
+    def test_it_round_trips_through_the_page(self):
+        from snsauto.creative.notation import format_mapping, parse_mapping
+
+        original = {"アストラ": "Astra", "プレミアプロ": "Premiere Pro"}
+        mapping, errors = parse_mapping(format_mapping(original))
+        assert mapping == original and errors == []
+
+    def test_words_are_split_on_commas_readings_and_lines(self):
+        from snsauto.creative.notation import parse_words
+
+        assert parse_words("プレミアリーグ、アストラゼネカ,X\nX") == [
+            "プレミアリーグ", "アストラゼネカ", "X"
+        ]

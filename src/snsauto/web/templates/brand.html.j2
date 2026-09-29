@@ -5,6 +5,12 @@
 
 {% block content %}
 {% if saved %}<div class="note">保存しました。次に生成する台本から反映されます。</div>{% endif %}
+{% if errors %}
+<div class="note warn" role="alert">
+  <strong>表記指定に読めない行があるため、保存していません。</strong>
+  <ul class="tight">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
 
 <form method="post" action="/projects/{{ project.id }}/brand"
       style="display:grid;gap:14px;max-width:700px">
@@ -59,6 +65,30 @@
         style="padding:8px 10px;border:1px solid var(--line);border-radius:6px;
                background:var(--panel-2);color:var(--ink);font-family:var(--font);font-size:12.5px"
         placeholder="具体的な金額は出さない。体験談ベースで話す。">{{ profile.notes or '' }}</textarea>
+    </div>
+  </div>
+
+  <div class="card" style="display:grid;gap:12px">
+    <div class="f" style="display:grid;gap:4px">
+      <label for="notation">表記指定（1行に1組、「入力 → 出力」）</label>
+      <textarea id="notation" name="notation" rows="5"
+        style="padding:8px 10px;border:1px solid var(--line);border-radius:6px;
+               background:var(--panel-2);color:var(--ink);font-family:var(--mono);font-size:12.5px"
+        placeholder="アストラ → Astra&#10;プレミア → Premiere&#10;プレミアプロ → Premiere Pro">{{ notation_text }}</textarea>
+      <span class="sub">
+        テロップ・ナレーション・タイトル・フック・CTAのすべてに適用されます。
+        長い語が先に当たるので、「プレミアプロ」と「プレミア」を両方書いても壊れません。
+        区切りは → = -&gt; タブのどれでも構いません。
+      </span>
+    </div>
+    <div class="f" style="display:grid;gap:4px">
+      <label for="notation_exceptions">置き換えない語（カンマまたは改行区切り）</label>
+      <input id="notation_exceptions" name="notation_exceptions" value="{{ exceptions_text }}"
+             placeholder="プレミアリーグ、アストラゼネカ">
+      <span class="sub">
+        「プレミア → Premiere」のままだと「プレミアリーグ」が「Premiereリーグ」になります。
+        こうした巻き込みを防ぐ語を入れてください。
+      </span>
     </div>
   </div>
 

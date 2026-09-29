@@ -193,6 +193,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     init_db()
     engine = get_engine()
+    # worker も起動時に同じ行を出す。journalctl で2行を並べれば、同じDBを
+    # 見ているかが分かる。違えば予約投稿は永遠に出ない。
+    import logging
+
+    from ..db import database_label, new_database_notice
+
+    log = logging.getLogger("snsauto.web")
+    log.info("database: %s", database_label())
+    notice = new_database_notice()
+    if notice:
+        log.warning(notice.replace("\n", " "))
 
     env = Environment(
         loader=ChoiceLoader([
@@ -1037,9 +1048,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project = session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "project not found")
+        from ..creative.notation import format_mapping
+
+        profile = project.brand_profile or {}
         return render("brand.html.j2", session, request, user, nav="project",
                       project=project, page_title=f"{project.name} のブランド設定",
-                      profile=project.brand_profile or {}, saved=saved)
+                      profile=profile, saved=saved,
+                      notation_text=format_mapping(profile.get("notation")),
+                      exceptions_text="、".join(profile.get("notation_exceptions") or []),
+                      errors=[])
 
     @app.post("/projects/{project_id}/brand")
     def brand_save(
@@ -1047,30 +1064,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         persona: str = Form(""), audience: str = Form(""), tone: str = Form(""),
         first_person: str = Form(""), banned_words: str = Form(""),
         required_disclaimer: str = Form(""), cta_style: str = Form(""),
-        notes: str = Form(""), csrf_token: str = Form(""),
+        notes: str = Form(""), notation: str = Form(""),
+        notation_exceptions: str = Form(""), csrf_token: str = Form(""),
         session: Session = Depends(get_session), user=Depends(require_write),
     ):
+        from ..creative.notation import parse_mapping, parse_words
+
         check_csrf(request, csrf_token)
         project = session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "project not found")
 
-        banned = [
-            w.strip() for w in banned_words.replace("、", ",").replace("\n", ",").split(",")
-            if w.strip()
-        ]
-        # Only keep what was filled in: empty keys would tell the model to
-        # write "as: " with nothing after it.
-        profile = {
-            key: value for key, value in {
-                "persona": persona.strip(), "audience": audience.strip(),
-                "tone": tone.strip(), "first_person": first_person.strip(),
-                "required_disclaimer": required_disclaimer.strip(),
-                "cta_style": cta_style.strip(), "notes": notes.strip(),
-            }.items() if value
+        mapping, errors = parse_mapping(notation)
+        if errors:
+            # 読めない行があるなら保存しない。黙って落とすと、書いたはずの
+            # 表記指定が効かないまま台本が作られ、気づくのは納品後になる。
+            # 入力はそのまま返して、直せばいいだけにする。
+            current = dict(project.brand_profile or {})
+            current.update({
+                "persona": persona, "audience": audience, "tone": tone,
+                "first_person": first_person, "required_disclaimer": required_disclaimer,
+                "cta_style": cta_style, "notes": notes,
+                "banned_words": parse_words(banned_words),
+            })
+            response = render(
+                "brand.html.j2", session, request, user, nav="project",
+                project=project, page_title=f"{project.name} のブランド設定",
+                profile=current, saved=False, notation_text=notation,
+                exceptions_text=notation_exceptions, errors=errors,
+            )
+            response.status_code = 400
+            return response
+
+        # この画面が扱う項目だけを書き換える。以前はプロフィールを丸ごと
+        # 置き換えていたため、画面に無い項目（CLIやJSONで入れた設定）が、
+        # 誰かがトーンの誤字を直して保存しただけで消えていた。
+        edited = {
+            "persona": persona.strip(), "audience": audience.strip(),
+            "tone": tone.strip(), "first_person": first_person.strip(),
+            "required_disclaimer": required_disclaimer.strip(),
+            "cta_style": cta_style.strip(), "notes": notes.strip(),
+            "banned_words": parse_words(banned_words),
+            "notation": mapping,
+            "notation_exceptions": parse_words(notation_exceptions),
         }
-        if banned:
-            profile["banned_words"] = banned
+        profile = dict(project.brand_profile or {})
+        for key, value in edited.items():
+            # 空にした項目は消す。空の値を残すと、生成に「トーン: 」とだけ
+            # 渡ってしまう。
+            if value:
+                profile[key] = value
+            else:
+                profile.pop(key, None)
         project.brand_profile = profile
         session.commit()
         return RedirectResponse(f"/projects/{project_id}/brand?saved=true", status_code=303)

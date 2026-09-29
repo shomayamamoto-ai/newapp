@@ -56,6 +56,12 @@ sudo -u snsauto /opt/snsauto/.venv/bin/pip install "snsauto[llm,web,pdf,storage]
 sudo -u snsauto /opt/snsauto/.venv/bin/playwright install chromium
 ```
 
+データ（DBと作業フォルダ）は `/opt/snsauto/data` に置かれます。場所は systemd
+ユニットの `Environment=` で指定しているので、**`.env` に `SNSAUTO_DB_URL` と
+`SNSAUTO_WORKSPACE` を書かないでください**。systemd では `.env` の値がユニットの
+指定を上書きし、`ProtectSystem=strict` のため書き込めない場所を指して起動できなく
+なります（`.env.example` では両方ともコメントにしてあります）。
+
 `tesseract-ocr-jpn` は競合動画のテロップを読むために必要です。
 入れない場合、テロップ解析は「未測定」と表示され、他の機能はそのまま動きます。
 
@@ -102,7 +108,14 @@ snsauto db upgrade      # 最新まで適用
 ```bash
 snsauto doctor          # 各プラットフォーム・ffmpeg・Chromium・LLM・ストレージの状態
 curl -fsS https://snsauto.example.com/healthz
+
+# web と worker が同じDBを見ていること（systemd の場合）
+journalctl -u snsauto-web -u snsauto-worker | grep -E "DB |database:"
 ```
+
+最後の確認は必ず行ってください。2行のパスが違えば、Web で予約した投稿は worker の
+見ているDBに無いため、**エラーも出ずに永遠に投稿されません**。管理者のシェルで
+`snsauto doctor` を打っても、サービスとは環境変数が違うため、この確認にはなりません。
 
 Web の「接続状況」画面に同じ内容が出ます。
 
@@ -110,6 +123,10 @@ Web の「接続状況」画面に同じ内容が出ます。
 
 ## 気をつける点
 
+- **web と worker は同じDBを見ている必要があります。** DBの既定の場所は起動した
+  フォルダからの相対パスなので、別々の場所から起動すると別のDBになります。
+  どちらも起動時にDBの場所を表示し、worker は見ているDBにプロジェクトが無ければ
+  警告します
 - **worker の生存監視をしてください。** 落ちると予約投稿が静かに止まります。
   `systemctl` と Docker の `restart: unless-stopped` で自動再起動はしますが、
   連続で落ちる状態には気づけません

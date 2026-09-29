@@ -9,6 +9,12 @@ User=snsauto
 Group=snsauto
 WorkingDirectory=/opt/snsauto
 EnvironmentFile=/opt/snsauto/.env
+# データは ReadWritePaths の中に置く。ProtectSystem=strict のため、それ以外は
+# 読み取り専用で、相対パスの既定値（/opt/snsauto/workspace）には書けない。
+# EnvironmentFile の値はここを上書きするので、.env ではこの2つを設定しないこと。
+# web と worker で同じ値でなければ、予約投稿が別のDBに入って投稿されない。
+Environment=SNSAUTO_DB_URL=sqlite:////opt/snsauto/data/snsauto.db
+Environment=SNSAUTO_WORKSPACE=/opt/snsauto/data/workspace
 # Bind to loopback only; Nginx terminates TLS and proxies to it. Exposing
 # uvicorn directly would serve the UI over plain HTTP.
 ExecStart=/opt/snsauto/.venv/bin/snsauto serve --host 127.0.0.1 --port 8000

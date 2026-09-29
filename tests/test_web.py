@@ -755,3 +755,87 @@ class TestAnInvisiblePostIsNotAGreenRow:
     def test_an_ordinary_post_gets_no_badge(self, app_env):
         client, ids = app_env
         assert "公開範囲" not in client.get(f"/projects/{ids['project']}").text
+
+
+class TestBrandSettingsKeepWhatTheyDoNotShow:
+    """保存が、画面に出ていない設定を消していた。
+
+    プロフィールを丸ごと置き換えていたため、JSON や CLI で入れた表記辞書が、
+    誰かがトーンの誤字を直して保存しただけで消え、次の台本から
+    「アストラ」に戻っていた。
+    """
+
+    def _seed(self, profile):
+        from snsauto import db as dbmod
+        from snsauto.models import Project
+
+        with dbmod.session_scope() as session:
+            project = session.query(Project).filter_by(name="secure").one()
+            project.brand_profile = profile
+            return project.id
+
+    def _profile(self, project_id):
+        from snsauto import db as dbmod
+        from snsauto.models import Project
+
+        with dbmod.session_scope() as session:
+            return dict(session.get(Project, project_id).brand_profile)
+
+    def test_saving_one_field_keeps_the_dictionary(self, secure_env):
+        client_for, _ = secure_env
+        pid = self._seed({
+            "tone": "親しみやすく",
+            "notation": {"アストラ": "Astra"},
+            "notation_exceptions": ["プレミアリーグ"],
+        })
+        client, token = client_for("editor@x.com")
+        page = client.get(f"/projects/{pid}/brand").text
+        assert "アストラ → Astra" in page          # 辞書が画面に出ている
+
+        # 画面の値をそのまま送る（ブラウザで保存を押したときと同じ）
+        import re
+        notation = re.search(r'id="notation"[^>]*>([^<]*)</textarea>', page).group(1)
+        client.post(f"/projects/{pid}/brand", data={
+            "tone": "親しみやすく、断定しない", "notation": notation,
+            "notation_exceptions": "プレミアリーグ", "csrf_token": token,
+        }, follow_redirects=False)
+
+        profile = self._profile(pid)
+        assert profile["tone"] == "親しみやすく、断定しない"
+        assert profile["notation"] == {"アストラ": "Astra"}
+        assert profile["notation_exceptions"] == ["プレミアリーグ"]
+
+    def test_keys_the_page_does_not_know_survive(self, secure_env):
+        """JSON で入れた、画面に欄が無い設定も残る。"""
+        client_for, _ = secure_env
+        pid = self._seed({"tone": "a", "set_by_json": "残るべき"})
+        client, token = client_for("editor@x.com")
+        client.post(f"/projects/{pid}/brand",
+                    data={"tone": "b", "csrf_token": token}, follow_redirects=False)
+        assert self._profile(pid)["set_by_json"] == "残るべき"
+
+    def test_clearing_a_field_removes_it(self, secure_env):
+        """空にした欄は消す。空の値が残ると生成に「トーン: 」とだけ渡る。"""
+        client_for, _ = secure_env
+        pid = self._seed({"tone": "a", "persona": "b"})
+        client, token = client_for("editor@x.com")
+        client.post(f"/projects/{pid}/brand",
+                    data={"persona": "b", "csrf_token": token}, follow_redirects=False)
+        assert "tone" not in self._profile(pid)
+
+    def test_a_malformed_dictionary_is_not_saved(self, secure_env):
+        """読めない行を黙って落とすと、効いていない指定に納品後まで気づけない。"""
+        client_for, _ = secure_env
+        pid = self._seed({"tone": "元のまま", "notation": {"アストラ": "Astra"}})
+        client, token = client_for("editor@x.com")
+        response = client.post(f"/projects/{pid}/brand", data={
+            "tone": "変えたつもり", "notation": "プレミア → Premiere\n区切りの無い行",
+            "csrf_token": token,
+        }, follow_redirects=False)
+
+        assert response.status_code == 400
+        assert "区切りの無い行" in response.text    # どの行が悪いか出る
+        assert "変えたつもり" in response.text      # 入力は消えずに戻る
+        profile = self._profile(pid)
+        assert profile["tone"] == "元のまま"          # 何も保存されていない
+        assert profile["notation"] == {"アストラ": "Astra"}

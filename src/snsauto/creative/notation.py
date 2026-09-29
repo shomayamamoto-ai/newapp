@@ -123,3 +123,58 @@ class NotationRules:
                     line[name] = result.text
                     found.extend(result.replacements)
         return found
+
+
+# ---------- 人が書く形との相互変換 ----------
+
+# 「アストラ → Astra」の区切りとして受け付けるもの。人は矢印も等号も
+# タブも使う。どれかひとつに決めて弾くより、全部受けたほうが事故が少ない。
+_SEPARATORS = ("→", "=>", "->", "＝", "=", "\t")
+
+
+def parse_mapping(text: str | None) -> tuple[dict[str, str], list[str]]:
+    """1行1組の「入力 → 出力」を辞書にする。
+
+    読めない行は**捨てずに返す**。黙って落とすと、書いたはずの表記指定が
+    効かないまま台本が生成され、気づくのは納品後になる。
+    """
+    mapping: dict[str, str] = {}
+    errors: list[str] = []
+    for number, raw in enumerate((text or "").splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        for separator in _SEPARATORS:
+            if separator in line:
+                source, _, target = line.partition(separator)
+                source, target = source.strip(" 「」\"'"), target.strip(" 「」\"'")
+                break
+        else:
+            errors.append(f"{number}行目「{line}」: 「入力 → 出力」の形で書いてください")
+            continue
+        if not source or not target:
+            errors.append(f"{number}行目「{line}」: 入力と出力の両方が必要です")
+        elif source == target:
+            errors.append(f"{number}行目「{line}」: 入力と出力が同じです")
+        elif source in mapping and mapping[source] != target:
+            errors.append(
+                f"{number}行目「{line}」: 「{source}」は既に「{mapping[source]}」と"
+                "指定されています"
+            )
+        else:
+            mapping[source] = target
+    return mapping, errors
+
+
+def format_mapping(mapping: dict | None) -> str:
+    return "\n".join(f"{source} → {target}" for source, target in (mapping or {}).items())
+
+
+def parse_words(text: str | None) -> list[str]:
+    """カンマ・読点・改行で区切った語の並び。順序を保ち、重複は1つにする。"""
+    seen: list[str] = []
+    for word in (text or "").replace("、", ",").replace("\n", ",").split(","):
+        word = word.strip()
+        if word and word not in seen:
+            seen.append(word)
+    return seen

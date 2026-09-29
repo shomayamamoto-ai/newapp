@@ -413,10 +413,19 @@ ffmpeg の閾値をそのまま方針にすると「音量だけで機械的に�
 }
 ```
 
+辞書は **Web UI のブランド設定画面**（1行に1組「アストラ → Astra」）か CLI で編集します。
+どちらで入れても同じ設定です。
+
 ```bash
-snsauto edit notation mybrand                       # 辞書を表示
-snsauto edit notation mybrand "アストラで編集する"    # 変換を試す
+snsauto edit notation mybrand --add アストラ=Astra --add プレミア=Premiere
+snsauto edit notation mybrand --except プレミアリーグ      # 置き換えない語
+snsauto edit notation mybrand --remove プレミア
+snsauto edit notation mybrand "アストラで編集する"          # 変換を試す
 ```
+
+読めない行（区切りが無い、同じ語を2通りに指定した等）があると**保存しません**。
+黙って落とすと、効いていない指定に納品後まで気づけないためです。どの行が悪いかを
+表示し、入力はそのまま残します。
 
 表記統一には固有の危険があります。「プレミア」→「Premiere」を入れたまま
 「プレミアリーグ」と書くと「Premiereリーグ」になります。**長い語を先に当てる**、
@@ -1164,6 +1173,16 @@ docker compose exec web snsauto user create you@example.com --role admin
 
 Web と worker は別プロセスです。**worker を止めると予約投稿と実績収集が止まりますが、
 Web は動き続けるので気づきにくい**点に注意してください。
+
+**Web と worker は同じDBを見ている必要があります。** DBの既定の場所は「起動した
+フォルダの `workspace/`」なので、別々の場所から起動すると別のDBになり、Web で
+予約した投稿は worker に見えず、エラーも出ずに投稿されません。同梱の systemd と
+Docker Compose は両方とも絶対パスで固定しています。どちらも起動時にDBの場所を
+表示し、worker は見ているDBにプロジェクトが無ければ警告します。
+
+新しい空のDBが作られたとき、設定名を打ち間違えたとき（`SNSAUTO_DATABASE_URL` など）は、
+コマンドの実行時にその場で知らせます。いま見ているデータの場所は `snsauto doctor` の
+「データの場所」に出ます。
 
 Nginx 設定（`deploy/nginx.conf`）は TLS 終端、`X-Forwarded-Proto` の受け渡し、
 レンダリング待ちに耐える 600 秒のタイムアウト、大きな動画のための `client_max_body_size 512M`

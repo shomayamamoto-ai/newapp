@@ -206,6 +206,60 @@ class TestRendering:
         assert probe(written)["duration"] == pytest.approx(1.0, abs=0.1)
 
 
+def _stream_seconds(path, selector):
+    """ストリームを最後まで読んで、実際の長さを測る（メタデータを信用しない）。"""
+    import re as _re
+
+    err = subprocess.run(
+        [ffmpeg_path(), "-hide_banner", "-i", str(path), "-map", selector,
+         "-f", "null", "-"],
+        capture_output=True, text=True,
+    ).stderr
+    hours, minutes, seconds = _re.findall(r"time=(\d+):(\d+):([\d.]+)", err)[-1]
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+class TestPhoneFootage:
+    """スマホで撮った素材は可変フレームレート（VFR）が普通。
+
+    以前の書き出しは ``setpts=N/FRAME_RATE/TB`` で、フレームが等間隔に並ぶ
+    前提で時刻を作り直していた。VFR の素材では 5.6秒の素材で映像 2.72秒・
+    音声 4.65秒と、1.9秒ずれて口と声が合わなくなった。
+    """
+
+    @pytest.fixture
+    def vfr_clip(self, tmp_path):
+        audio = _build(tmp_path / "a.wav", [
+            ("voice", 0.90), ("silence", 0.70), ("voice", 0.90),
+            ("silence", 0.70), ("voice", 0.90),
+        ])
+        clip = tmp_path / "vfr.mp4"
+        # フレームを不規則に間引いて、タイムスタンプが等間隔でない動画にする
+        subprocess.run(
+            [ffmpeg_path(), "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=s=320x568:r=60:d=4.1", "-i", audio,
+             "-vf", "select='not(mod(n\\,2))+eq(mod(n\\,7)\\,3)'",
+             "-fps_mode", "vfr", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-shortest", str(clip)],
+            check=True,
+        )
+        return clip
+
+    def test_video_and_audio_stay_together(self, vfr_clip, tmp_path):
+        plan = plan_trim(vfr_clip)
+        assert plan.cuts, "この素材には切る間がある前提"
+        written = apply_trim(plan, tmp_path / "out.mp4")
+        video = _stream_seconds(written, "0:v")
+        audio = _stream_seconds(written, "0:a")
+        # 以前は 1.9秒ずれていた。フレーム境界の端数（数フレーム）までは許す。
+        assert abs(video - audio) < 0.12, (video, audio)
+
+    def test_the_result_is_the_planned_length(self, vfr_clip, tmp_path):
+        plan = plan_trim(vfr_clip)
+        written = apply_trim(plan, tmp_path / "out.mp4")
+        assert _stream_seconds(written, "0:a") == pytest.approx(plan.result_sec, abs=0.12)
+
+
 class TestRetakesAreProposedNotCut:
     """「言い直し」は文字起こしが無いと確定できない。"""
 
