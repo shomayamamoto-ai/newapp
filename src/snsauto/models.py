@@ -284,6 +284,10 @@ class Script(Base, TimestampMixin):
     # against the evidence that produced it.
     playbook: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # 表記ゆれの統一で、実際に置き換わった組（「アストラ→Astra」など）。
+    # 辞書の事故は書いた本人しか気づけないので、結果ではなく適用履歴を残す。
+    notation: Mapped[list] = mapped_column(JSON, default=list)
+
     project: Mapped[Project] = relationship(back_populates="scripts")
     storyboards: Mapped[list["Storyboard"]] = relationship(
         back_populates="script", cascade="all, delete-orphan"

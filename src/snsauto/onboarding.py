@@ -293,8 +293,150 @@ INSTAGRAM_SCOPE_USES: tuple[ScopeUse, ...] = (
     ),
 )
 
+YOUTUBE_SCOPE_USES: tuple[ScopeUse, ...] = (
+    ScopeUse(
+        "https://www.googleapis.com/auth/youtube.upload",
+        "運用代行しているチャンネルに、承認済みの短尺動画を投稿します。"
+        "投稿は依頼主の承認を得たものだけで、チャンネル管理者本人がこの認可を"
+        "通して接続します。",
+        "Upload approved short-form video to the YouTube channel the operator "
+        "manages on the owner's behalf. Every upload is content the channel "
+        "owner has approved, and the channel is connected by its own manager "
+        "through this authorisation flow.",
+        ("POST /upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",),
+        ("ツールにログインし、対象チャンネルが未連携であることを映す",
+         "チャンネルを連携し、Googleの認可画面を通す",
+         "生成済みの動画を投稿し、YouTube Studio 側に現れるところまで映す"),
+    ),
+    ScopeUse(
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "同じジャンルで伸びている動画を調べ、投稿後は自分の動画の再生数・"
+        "高評価・コメント数を読みます。企画の判断材料と、依頼主への報告に"
+        "使います。",
+        "Read public video data to research what performs well in the "
+        "channel's category, and read the channel's own statistics - views, "
+        "likes, comments - to report performance to the channel owner and to "
+        "decide what to produce next.",
+        ("GET /youtube/v3/search?part=id",
+         "GET /youtube/v3/videos?part=snippet,statistics,contentDetails",
+         "GET /youtube/v3/channels?part=snippet,statistics",
+         "GET /youtube/v3/commentThreads?part=snippet"),
+        ("調査画面でキーワードを入力し、上位動画が一覧されるところを映す",
+         "その結果から構成や尺の傾向が出力されるところを映す"),
+    ),
+    ScopeUse(
+        "https://www.googleapis.com/auth/yt-analytics.readonly",
+        "自分の動画の視聴維持率と離脱カーブを取得し、どこで離脱されたかを"
+        "特定します。この権限が無いと、再生数は取れても「どこで離れたか」が"
+        "分からず、改善の判断ができません。",
+        "Read the channel's own audience retention report, to identify where "
+        "viewers stop watching. Without this, view counts are available but "
+        "the point of drop-off is not, and that is the measurement the "
+        "editing decisions are based on.",
+        ("GET /v2/reports?ids=channel==MINE&metrics=audienceWatchRatio"
+         "&dimensions=elapsedVideoTimeRatio",),
+        ("投稿済みの動画を開き、視聴維持カーブが表示されるところを映す",
+         "離脱点が絵コンテのどのカットかまで表示されるところを映す"),
+    ),
+)
+
+@dataclass
+class ReviewForm:
+    """申請先ごとに違う、審査の名前・提出物・差し戻しの典型。
+
+    Meta の App Review と Google の API コンプライアンス監査は別物で、
+    求められる書類も落とされ方も違う。共通の雛形を使い回すと、書いてある
+    とおりに準備して落ちる。
+    """
+
+    review_name: str
+    subject_ja: str
+    subject_en: str
+    prerequisites: tuple[tuple[str, str], ...]
+    rejections: tuple[tuple[str, str], ...]
+
+
+REVIEW_FORMS: dict[Platform, ReviewForm] = {
+    Platform.INSTAGRAM: ReviewForm(
+        review_name="アプリ審査（App Review）",
+        subject_ja=(
+            "代理店がクライアントのInstagramアカウントを運用代行するための"
+            "ツールです。ジャンルごとの傾向調査 → 台本と動画の生成 → "
+            "リールとしての投稿 → 実績のレポートまでを一貫して行います。"
+            "操作対象は運用委託を受けたアカウントのみで、いずれも管理者本人が"
+            "この認可フローを通して接続します。"
+        ),
+        subject_en=(
+            "This app is an SNS operations tool used by a marketing agency to "
+            "manage the Instagram accounts of its clients. For each managed "
+            "account it researches what performs well in that account's "
+            "category, produces short-form video from that research, publishes "
+            "it as a Reel with the account owner's authorisation, and reports "
+            "the resulting performance back to the owner. Every account it "
+            "touches is one the operator has been engaged to manage, and is "
+            "connected by that account's own administrator through this "
+            "permission flow."
+        ),
+        prerequisites=(
+            ("プライバシーポリシーURL", "公開されている必要があります（必須）"),
+            ("利用規約URL", "同上"),
+            ("アプリアイコン", "1024x1024"),
+            ("ビジネス認証", "登記情報などの書類。審査と並行して進みます"),
+        ),
+        rejections=(
+            ("認可フローが録画に含まれていない", "ログアウト状態から録り直す"),
+            ("申請した権限のうち一部しか録画に出てこない", "権限ごとに該当場面を用意する"),
+            ("用途説明が抽象的（「分析のため」等）", "どの画面のどの数値になるかまで書く"),
+            ("実装より広い権限を申請している", "使っていない権限は申請から外す"),
+            ("ビジネス認証が未完了", "審査と並行して先に着手する"),
+        ),
+    ),
+    Platform.YOUTUBE: ReviewForm(
+        review_name="API利用コンプライアンス監査",
+        subject_ja=(
+            "代理店がクライアントのYouTubeチャンネルを運用代行するための"
+            "ツールです。ジャンルごとの傾向調査 → 台本と動画の生成 → "
+            "ショート動画としての投稿 → 視聴維持率を含む実績のレポートまでを"
+            "一貫して行います。操作対象は運用委託を受けたチャンネルのみで、"
+            "いずれも管理者本人がこの認可フローを通して接続します。"
+            "一般公開して不特定多数に使わせるものではありません。"
+        ),
+        subject_en=(
+            "This app is an SNS operations tool used by a marketing agency to "
+            "manage the YouTube channels of its clients. For each managed "
+            "channel it researches what performs well in that channel's "
+            "category, produces short-form video from that research, uploads it "
+            "with the channel owner's authorisation, and reports the resulting "
+            "performance - including audience retention - back to the owner. "
+            "It is not a general-purpose consumer product: every channel it "
+            "touches is one the operator has been engaged to manage, and is "
+            "connected by that channel's own manager through this OAuth flow."
+        ),
+        prerequisites=(
+            ("プライバシーポリシーURL", "公開されている必要があります（必須）"),
+            ("利用規約URL", "同上"),
+            ("OAuth同意画面", "アプリ名・ロゴ・スコープの正当性説明まで入力済みであること"),
+            ("APIクォータ", "search.list は1回100ユニット（既定の上限は1日10,000）。"
+                            "申請時に想定利用量を聞かれます"),
+            ("監査フォーム", "Data API と Analytics API で別々に提出します"),
+        ),
+        rejections=(
+            ("監査前に本番運用を始めてしまっている",
+             "監査が通るまでAPIからの投稿は非公開に固定されます。先に監査を出す"),
+            ("スコープが用途より広い", "使っていないスコープは要求から外す"),
+            ("用途説明が一般消費者向けアプリのように読める",
+             "運用代行であること、接続するのは委託先本人であることを明記する"),
+            ("録画に認可画面が含まれていない", "ログアウト状態から録り直す"),
+            ("クォータの想定が実装と合っていない",
+             "1日の調査回数から逆算した数字を出す"),
+        ),
+    ),
+}
+
+
 SCOPE_USES: dict[Platform, tuple[ScopeUse, ...]] = {
     Platform.INSTAGRAM: INSTAGRAM_SCOPE_USES,
+    Platform.YOUTUBE: YOUTUBE_SCOPE_USES,
 }
 
 
@@ -414,14 +556,16 @@ def review_pack(platform: Platform, settings=None) -> str:
     """
     uses = SCOPE_USES.get(platform)
     if not uses:
+        supported = "、".join(sorted(p.value for p in SCOPE_USES))
         raise ValueError(
             f"{platform.value} の申請パックはまだありません。"
-            "現在は Instagram のみ対応しています。"
+            f"現在の対応は {supported} です。"
         )
 
     setup = APP_SETUP[platform]
+    form = REVIEW_FORMS[platform]
     lines = [
-        f"# {platform.value.title()} アプリ審査 申請パック",
+        f"# {platform.value.upper()} {form.review_name} 申請パック",
         "",
         "このファイルは申請フォームに貼り付けるための下書きです。",
         "英文は審査担当者が読む欄に、日本語は社内確認用に使ってください。",
@@ -435,30 +579,19 @@ def review_pack(platform: Platform, settings=None) -> str:
         "| 項目 | 内容 |",
         "|---|---|",
         f"| 開発者コンソール | {setup.console} — {setup.console_url} |",
-        "| プライバシーポリシーURL | 公開されている必要があります（必須） |",
-        "| 利用規約URL | 同上 |",
-        "| アプリアイコン | 1024x1024 |",
-        "| ビジネス認証 | 登記情報などの書類。審査と並行して進みます |",
+    ]
+    lines += [f"| {name} | {detail} |" for name, detail in form.prerequisites]
+    lines += [
         "",
         "## 1. アプリの用途（Overview）",
         "",
         "**English (申請欄にそのまま貼れます)**",
         "",
-        "> This app is an SNS operations tool used by a marketing agency to "
-        "manage the Instagram accounts of its clients. For each managed "
-        "account it researches what performs well in that account's category, "
-        "produces short-form video from that research, publishes it as a Reel "
-        "with the account owner's authorisation, and reports the resulting "
-        "performance back to the owner. Every account it touches is one the "
-        "operator has been engaged to manage, and is connected by that "
-        "account's own administrator through this permission flow.",
+        f"> {form.subject_en}",
         "",
         "**日本語**",
         "",
-        "> 代理店がクライアントのInstagramアカウントを運用代行するためのツールです。"
-        "ジャンルごとの傾向調査 → 台本と動画の生成 → リールとしての投稿 → "
-        "実績のレポートまでを一貫して行います。操作対象は運用委託を受けた"
-        "アカウントのみで、いずれも管理者本人がこの認可フローを通して接続します。",
+        f"> {form.subject_ja}",
         "",
         "## 2. 権限ごとの用途と操作録画",
         "",
@@ -502,13 +635,9 @@ def review_pack(platform: Platform, settings=None) -> str:
         "",
         "| 理由 | 対処 |",
         "|---|---|",
-        "| 認可フローが録画に含まれていない | ログアウト状態から録り直す |",
-        "| 申請した権限のうち一部しか録画に出てこない | 権限ごとに該当場面を用意する |",
-        "| 用途説明が抽象的（「分析のため」等） | どの画面のどの数値になるかまで書く |",
-        "| 実装より広い権限を申請している | 使っていない権限は申請から外す |",
-        "| ビジネス認証が未完了 | 審査と並行して先に着手する |",
-        "",
     ]
+    lines += [f"| {reason} | {fix} |" for reason, fix in form.rejections]
+    lines.append("")
 
     gates = LAUNCH_GATES.get(platform, ())
     if gates:

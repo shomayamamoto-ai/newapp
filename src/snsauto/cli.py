@@ -44,6 +44,7 @@ user_app = typer.Typer(help="Web UI のログインユーザー管理。", no_ar
 workspace_app = typer.Typer(help="ワークスペースの容量確認と手動削除。", no_args_is_help=True)
 watch_app = typer.Typer(help="競合アカウントの定点ウォッチと差分。", no_args_is_help=True)
 setup_app = typer.Typer(help="接続までの手順と、アプリ審査の申請資料。", no_args_is_help=True)
+edit_app = typer.Typer(help="撮影した素材の無音カットと言い直しの確認。", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(research_app, name="research")
@@ -59,6 +60,7 @@ app.add_typer(ab_app, name="ab")
 app.add_typer(user_app, name="user")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(setup_app, name="setup")
+app.add_typer(edit_app, name="edit")
 
 console = Console()
 
@@ -1084,6 +1086,111 @@ def user_secret():
 
 
 # ---------------- database ----------------
+
+# ---------------- edit ----------------
+
+
+def _print_trim_plan(plan, retakes):
+    table = Table(title="無音の候補と判定", header_style="bold", title_justify="left")
+    table.add_column("時刻", justify="right", width=13)
+    table.add_column("長さ", justify="right", width=6)
+    table.add_column("判定", width=4)
+    table.add_column("理由", overflow="fold")
+    for gap in plan.gaps:
+        mark = "[green]切[/green]" if gap.decision == "cut" else "[yellow]残[/yellow]"
+        table.add_row(f"{gap.start:.2f}-{gap.end:.2f}", f"{gap.duration:.2f}s",
+                      mark, gap.reason)
+    console.print(table)
+    console.print(
+        f"\n{plan.duration:.2f}秒 → [bold]{plan.result_sec:.2f}秒[/bold]"
+        f"（{plan.removed_sec:.2f}秒を削除、{len(plan.cuts)}箇所）"
+    )
+    if retakes:
+        console.print(
+            f"\n[yellow]言い直しの候補が{len(retakes)}件あります[/yellow]"
+            "[dim]（自動ではカットしません。文字起こしが無いと確定できないためです）[/dim]"
+        )
+        for candidate in retakes:
+            console.print(f"  {candidate.start:6.2f}s  {candidate.reason}")
+
+
+@edit_app.command("trim")
+def edit_trim(
+    source: Path = typer.Argument(..., help="撮影した素材の動画ファイル"),
+    out: Path = typer.Option(None, "--out", help="書き出し先（省略すると計画の表示のみ）"),
+    min_gap: float = typer.Option(
+        None, "--min-gap", help="この秒数以上の間だけを対象にする（既定 0.3）"
+    ),
+    handle: float = typer.Option(
+        None, "--handle", help="発話の前後に残す余白の秒数（既定 0.1）"
+    ),
+    trim_ends: bool = typer.Option(
+        False, "--trim-ends", help="素材の先頭と末尾の無音も詰める"
+    ),
+):
+    """無音をカットして詰める。どこを切るかを先に表示する。
+
+    単語の途中では切りません。0.3秒未満の間（促音や子音）と、無声子音の
+    エネルギーが残っている間は残し、切る場合も発話の前後に0.1秒の余白を
+    残します。
+    """
+    from .media.trim import HANDLE_SEC, MIN_GAP_SEC, apply_trim, plan_trim, retake_candidates
+
+    if not source.exists():
+        raise typer.BadParameter(f"素材が見つかりません: {source}")
+
+    plan = plan_trim(
+        source,
+        min_gap=min_gap if min_gap is not None else MIN_GAP_SEC,
+        handle=handle if handle is not None else HANDLE_SEC,
+        keep_head_tail=not trim_ends,
+    )
+    _print_trim_plan(plan, retake_candidates(plan))
+
+    if out is None:
+        console.print("\n[dim]--out を付けると、この計画どおりに書き出します。[/dim]")
+        return
+    if not plan.cuts:
+        console.print("\n[yellow]切る箇所がないため、そのまま複製します。[/yellow]")
+    written = apply_trim(plan, out)
+    console.print(f"[green]書き出しました:[/green] {written}")
+
+
+@edit_app.command("notation")
+def edit_notation(
+    project: str = typer.Argument(..., help="表記辞書を持つプロジェクト"),
+    text: str = typer.Argument(None, help="変換するテキスト（省略すると辞書の表示のみ）"),
+):
+    """表記ゆれを統一する。辞書はプロジェクトのブランド設定に持たせます。"""
+    init_db()
+    from .creative.notation import NotationRules
+
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        rules = NotationRules.from_project(proj)
+
+    if not rules:
+        console.print(
+            "[yellow]このプロジェクトに表記指定がありません。[/yellow]\n"
+            "[dim]ブランド設定の notation に "
+            '{"アストラ": "Astra", "プレミア": "Premiere"} のように入れてください。[/dim]'
+        )
+        return
+
+    table = Table(title="表記指定", header_style="bold", title_justify="left")
+    table.add_column("入力")
+    table.add_column("出力")
+    for source, target in sorted(rules.mapping.items()):
+        table.add_row(source, target)
+    console.print(table)
+    if rules.exceptions:
+        console.print(f"[dim]除外語: {'、'.join(rules.exceptions)}[/dim]")
+
+    if text:
+        result = rules.apply(text)
+        console.print(f"\n{result.text}")
+        console.print(f"[dim]{result.summary_ja()}[/dim]")
+
 
 # ---------------- setup ----------------
 

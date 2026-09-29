@@ -171,7 +171,80 @@ class TestReviewPack:
         assert "ログアウト状態から始める" in body     # the commonest rejection
         assert "ビジネス認証" in body
 
-    def test_a_platform_without_a_pack_says_so(self):
+    def test_a_platform_without_a_pack_says_which_ones_exist(self):
         with pytest.raises(ValueError) as caught:
             review_pack(Platform.X)
-        assert "Instagram" in str(caught.value)
+        message = str(caught.value)
+        assert "instagram" in message and "youtube" in message
+
+
+class TestTheYouTubePack:
+    """YouTube の関門は Meta と別物で、書類も落とされ方も違う。
+
+    共通の雛形を使い回すと、書いてあるとおりに準備して落ちる。
+    """
+
+    def test_it_is_named_after_the_audit_not_meta_s_app_review(self):
+        body = review_pack(Platform.YOUTUBE)
+        assert "API利用コンプライアンス監査" in body.splitlines()[0]
+        assert "ビジネス認証" not in body       # これは Meta 側の要求
+
+    def test_it_asks_for_what_google_actually_asks_for(self):
+        body = review_pack(Platform.YOUTUBE)
+        assert "OAuth同意画面" in body
+        assert "クォータ" in body               # 想定利用量を聞かれる
+
+    def test_the_overview_says_it_is_not_a_consumer_product(self):
+        """一般消費者向けアプリに読めると差し戻される。"""
+        body = review_pack(Platform.YOUTUBE)
+        assert "not a general-purpose consumer product" in body
+        assert "一般公開して不特定多数に使わせるものではありません" in body
+
+    def test_it_covers_exactly_the_scopes_we_request(self):
+        from snsauto.platforms.oauth import YOUTUBE_SCOPES
+
+        described = [use.scope for use in SCOPE_USES[Platform.YOUTUBE]]
+        assert sorted(described) == sorted(YOUTUBE_SCOPES)
+
+    def test_the_retention_scope_says_what_is_lost_without_it(self):
+        """スコープ名だけでは審査担当者にも運用者にも伝わらない。"""
+        retention = next(
+            use for use in SCOPE_USES[Platform.YOUTUBE]
+            if use.scope.endswith("yt-analytics.readonly")
+        )
+        assert "視聴維持率" in retention.purpose_ja
+        assert "drop-off" in retention.purpose_en
+
+    def test_every_endpoint_we_claim_appears_in_the_adapter(self):
+        import re
+        from pathlib import Path
+
+        source = Path("src/snsauto/platforms/youtube.py").read_text(encoding="utf-8")
+        generic = {"https", "www", "googleapis", "com", "youtube", "auth", "part",
+                   "reports", "upload", "resumable", "uploadType", "ids", "channel"}
+        checked = 0
+        for use in SCOPE_USES[Platform.YOUTUBE]:
+            for endpoint in use.endpoints:
+                # 動詞と共通のホスト部は除き、エッジ名だけを見る。
+                path = endpoint.split("?")[0].split(" ", 1)[-1]
+                for token in re.findall(r"[a-zA-Z][a-zA-Z_]{3,}", path):
+                    if token in generic:
+                        continue
+                    assert token in source, f"{use.scope}: {token} を呼んでいない"
+                    checked += 1
+        assert checked >= 3
+
+
+class TestBothPacksStayHonest:
+    @pytest.mark.parametrize("platform", [Platform.INSTAGRAM, Platform.YOUTUBE])
+    def test_the_pack_names_its_own_review(self, platform):
+        from snsauto.onboarding import REVIEW_FORMS
+
+        body = review_pack(platform)
+        assert REVIEW_FORMS[platform].review_name in body
+
+    @pytest.mark.parametrize("platform", [Platform.INSTAGRAM, Platform.YOUTUBE])
+    def test_the_pack_lists_rejection_reasons(self, platform):
+        body = review_pack(platform)
+        assert "差し戻し" in body
+        assert "ログアウト状態から録り直す" in body

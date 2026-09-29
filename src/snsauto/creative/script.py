@@ -22,6 +22,7 @@ from .originality import (
 from ..models import Platform, ResearchRun, Script
 from ..research.keyword import summarize_corpus
 from ..platforms import PostRecord
+from .notation import NotationRules
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,22 @@ class ScriptService:
 
         data["lines"] = self._repair_timing(data.get("lines", []), duration)
 
+        # 表記ゆれの統一。生成のたびに人が直していた作業で、テロップ・
+        # ナレーション・タイトル・フック・CTA のすべてに効かせる。何を
+        # 置き換えたかは notation に残す（辞書の事故は書いた本人しか
+        # 気づけないため）。
+        notation = NotationRules.from_project(project)
+        applied: list[str] = []
+        if notation:
+            changes = notation.apply_to_lines(data["lines"])
+            for field_name in ("title", "hook", "body", "cta"):
+                value = data.get(field_name)
+                if isinstance(value, str) and value:
+                    result = notation.apply(value)
+                    data[field_name] = result.text
+                    changes.extend(result.replacements)
+            applied = sorted({f"{c.source}→{c.target}" for c in changes})
+
         script = Script(
             project_id=project.id,
             run_id=run.id if run else None,
@@ -180,6 +197,7 @@ class ScriptService:
             hashtags=data.get("hashtags", []),
             rationale=data.get("rationale"),
             originality=originality,
+            notation=applied,
             playbook=(
                 {"sample": playbook.sample, "reliability": playbook.reliability,
                  "applied": [f.sentence() for f in playbook.findings],
