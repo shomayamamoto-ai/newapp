@@ -1,0 +1,229 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / {{ project.name }}</div>{% endblock %}
+{% block heading %}{{ project.name }}{% endblock %}
+{% block subheading %}{{ project.description or '説明なし' }}{% endblock %}
+{% block actions %}
+<a class="btn ghost" href="/projects/{{ project.id }}/brand">ブランド設定</a>
+<a class="btn ghost" href="/projects/{{ project.id }}/report">実績レポート</a>
+{% if user and user.can_write %}
+<form method="post" action="/projects/{{ project.id }}/metrics" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="btn ghost">実績を収集</button>
+</form>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="grid g4">
+  <div class="card"><div class="stat-label">総再生数</div><div class="stat">{{ perf.views | int_ }}</div></div>
+  <div class="card"><div class="stat-label">平均エンゲージ率</div><div class="stat">{{ perf.engagement_rate | pct }}</div>
+    <div class="stat-note">計測済み {{ perf.measured }} 件</div></div>
+  <div class="card"><div class="stat-label">動画</div><div class="stat">{{ renders | length }}</div></div>
+  <div class="card"><div class="stat-label">PDCA</div><div class="stat">{{ project.pdca_cycles | length }}</div></div>
+</div>
+
+{% if job_id %}<div class="note">処理を開始しました。<a href="/jobs">実行履歴</a>で進行状況を確認できます。</div>{% endif %}
+
+{% if user and user.can_write %}
+<h2>実行</h2>
+<div class="grid g2">
+  <form class="act" method="post" action="/projects/{{ project.id }}/research">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="f" style="flex:1;min-width:150px">
+      <label for="rk">競合調査するキーワード</label>
+      <input id="rk" name="keyword" required placeholder="副業 始め方">
+    </div>
+    <div class="f"><label for="rp">対象</label>
+      <select id="rp" name="platform">
+        {% for p in platforms %}<option value="{{ p }}"{{ ' selected' if p == 'youtube' }}>{{ p }}</option>{% endfor %}
+      </select></div>
+    <div class="f"><label for="rl">件数</label>
+      <input id="rl" name="limit" type="number" value="50" min="10" max="200" style="width:72px"></div>
+    <div class="f"><label for="rw">期間</label>
+      <select id="rw" name="within_days">
+        <option value="0">指定なし</option>
+        <option value="7">直近7日</option>
+        <option value="30">直近30日</option>
+        <option value="90">直近90日</option>
+      </select></div>
+    <div class="f"><label for="rd">尺</label>
+      <select id="rd" name="duration_band">
+        <option value="">指定なし</option>
+        <option value="short">〜4分</option>
+        <option value="medium">4〜20分</option>
+        <option value="long">20分〜</option>
+      </select></div>
+    <div class="f chk"><label for="rc"><input id="rc" type="checkbox" name="comments" value="true"> コメントも取得</label></div>
+    <button class="btn">調査を開始</button>
+  </form>
+
+  <form class="act" method="post" action="/projects/{{ project.id }}/script">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="f" style="flex:1;min-width:150px">
+      <label for="sk">台本のテーマ</label>
+      <input id="sk" name="keyword" required placeholder="副業の始め方">
+    </div>
+    <div class="f"><label for="sp">投稿先</label>
+      <select id="sp" name="platform">
+        {% for p in platforms %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select></div>
+    <div class="f"><label for="sd">尺（秒）</label>
+      <input id="sd" name="duration" type="number" value="30" min="5" max="180" style="width:72px"></div>
+    <div class="f"><label for="sr">参照する調査</label>
+      <select id="sr" name="run_id">
+        <option value="">なし</option>
+        {% for row in runs %}<option value="{{ row.run.id }}">#{{ row.run.id }} {{ row.run.keyword }}</option>{% endfor %}
+      </select></div>
+    <button class="btn">台本を作成</button>
+  </form>
+</div>
+{% endif %}
+
+<h2>このアカウントで効いているもの</h2>
+{% if playbook.findings %}
+<p class="sub" style="margin-bottom:8px">
+  自社の実績{{ playbook.sample }}本から、ばらつきを超える差が出た項目です。
+  次の台本生成に自動で反映されます。
+</p>
+<ul class="tight">
+  {% for finding in playbook.findings %}
+  <li>{{ finding.sentence() }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="sub">{{ playbook.note }}</p>
+{% endif %}
+
+<h2>調査</h2>
+{% if project.research_runs %}
+<table>
+  <thead><tr><th>キーワード</th><th>プラットフォーム</th><th class="num">件数</th>
+             <th class="num">中央値エンゲージ</th><th>勝ち尺</th><th>日時</th></tr></thead>
+  <tbody>
+  {% for row in runs %}
+    <tr>
+      <td><a href="/runs/{{ row.run.id }}">{{ row.run.keyword }}</a></td>
+      <td><span class="pill mute">{{ row.run.platform.value }}</span></td>
+      <td class="num">{{ row.run.posts | length }}</td>
+      <td class="num">{{ row.median_engagement | pct }}</td>
+      <td>{{ row.band or '-' }}</td>
+      <td class="sub">{{ row.run.created_at | dt }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">調査がありません。</p>{% endif %}
+
+<h2>台本と動画</h2>
+{% if scripts %}
+<table>
+  <thead><tr><th>タイトル</th><th>プラットフォーム</th><th class="num">尺</th>
+             <th class="num">ビート</th><th>絵コンテ</th><th>動画</th></tr></thead>
+  <tbody>
+  {% for row in scripts %}
+    <tr>
+      <td><a href="/scripts/{{ row.script.id }}">{{ row.script.title }}</a></td>
+      <td><span class="pill mute">{{ row.script.platform.value }}</span></td>
+      <td class="num">{{ row.script.target_duration_sec | dur }}</td>
+      <td class="num">{{ row.script.lines | length }}</td>
+      <td class="num">{{ row.shots }}</td>
+      <td>{% if row.render %}<span class="pill ok">{{ row.render.duration_sec | dur }}</span>{% else %}<span class="pill mute">未生成</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">台本がありません。</p>{% endif %}
+
+<h2>投稿</h2>
+{% if publications %}
+<table>
+  <thead><tr><th>プラットフォーム</th><th>状態</th><th class="num">再生</th><th class="num">いいね</th>
+             <th class="num">エンゲージ率</th><th>リンク</th></tr></thead>
+  <tbody>
+  {% for row in publications %}
+    <tr>
+      <td>{{ row.publication.platform.value | upper }}
+        {% if row.publication.account %}
+        <div class="sub">{{ row.publication.account.display_name or row.publication.account.external_id }}</div>
+        {% endif %}
+      </td>
+      <td><span class="pill {{ row.publication.status.value }}">{{ row.publication.status.value }}</span>
+        {# A published post nobody can see is not a green row. #}
+        {% if row.publication.warning %}
+        <div class="sub warn" title="{{ row.publication.warning }}">公開範囲 {{ row.publication.visibility or '要確認' }}</div>
+        {% endif %}
+      </td>
+      <td class="num">{{ row.summary.views | int_ if row.summary.has_data else '-' }}</td>
+      <td class="num">{{ row.summary.likes | int_ if row.summary.has_data else '-' }}</td>
+      <td class="num">{{ row.summary.engagement_rate | pct if row.summary.has_data else '-' }}</td>
+      <td>{% if row.publication.external_url %}<a href="{{ row.publication.external_url }}" target="_blank" rel="noopener">開く</a>
+          {% elif row.publication.error %}<span class="sub">{{ row.publication.error | truncate(46) }}</span>
+          {% else %}<span class="sub">-</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">投稿がありません。</p>{% endif %}
+
+<h2>PDCA</h2>
+{% if project.pdca_cycles %}
+<table>
+  <thead><tr><th>タイトル</th><th>段階</th><th>判定</th><th>仮説</th><th class="num">対象</th></tr></thead>
+  <tbody>
+  {% for cycle in project.pdca_cycles %}
+    <tr>
+      <td><a href="/cycles/{{ cycle.id }}">{{ cycle.title }}</a></td>
+      <td><span class="pill mute">{{ cycle.stage.value }}</span></td>
+      <td>{% if cycle.verdict %}<span class="pill {{ cycle.verdict }}">{{ cycle.verdict }}</span>{% else %}<span class="sub">-</span>{% endif %}</td>
+      <td class="trunc sub">{{ cycle.hypothesis }}</td>
+      <td class="num">{{ (cycle.publication_ids or []) | length }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">PDCAサイクルがありません。</p>{% endif %}
+{% if user and user.can_write %}
+<h2>定点ウォッチしている競合</h2>
+<p class="sub" style="margin-bottom:8px">キーワード調査が「この話題で何が効くか」に答えるのに対し、こちらは「この競合が今何をしているか」に答えます。2回目以降のスイープで前回との差分が出ます。</p>
+
+{% if competitors %}
+<table>
+  <thead><tr><th>競合</th><th>媒体</th><th>最終確認</th><th>直近の変化</th><th></th></tr></thead>
+  <tbody>
+  {% for row in competitors %}
+    <tr>
+      <td><strong>{{ row.account.display }}</strong> <span class="sub">@{{ row.account.handle }}</span></td>
+      <td><span class="pill mute">{{ row.account.platform.value }}</span></td>
+      <td>{% if row.account.last_checked_at %}{{ row.account.last_checked_at | dt }}{% else %}<span class="sub">未実行</span>{% endif %}</td>
+      <td>{% if row.trend %}{{ row.trend }}{% else %}<span class="sub">比較対象なし（次回から）</span>{% endif %}</td>
+      <td><form method="post" action="/projects/{{ project.id }}/watch/{{ row.account.id }}/remove" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn ghost">停止</button></form></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<form class="act" method="post" action="/projects/{{ project.id }}/watch/sweep" style="margin-top:10px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="btn">全員をスイープ</button>
+</form>
+{% else %}
+<p class="empty">まだ登録がありません。</p>
+{% endif %}
+
+<form class="act" method="post" action="/projects/{{ project.id }}/watch/add" style="margin-top:10px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="f" style="flex:1;min-width:150px">
+    <label for="wh">競合のハンドル</label>
+    <input id="wh" name="handle" required placeholder="@rival_channel"></div>
+  <div class="f"><label for="wp">媒体</label>
+    <select id="wp" name="platform">
+      {% for p in watchable_platforms %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select></div>
+  <div class="f"><label for="wl">表示名</label>
+    <input id="wl" name="label" placeholder="任意"></div>
+  <button class="btn">追加</button>
+</form>
+<p class="sub">TikTok は公開キーワード検索APIもアカウント参照APIも無いため、定点ウォッチの対象外です。Instagram は相手がビジネス／クリエイターアカウントの場合のみ参照できます。</p>
+{% endif %}
+{% endblock %}

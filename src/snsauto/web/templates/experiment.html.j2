@@ -1,0 +1,56 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / <a href="/projects/{{ project.id }}">{{ project.name }}</a> / A/Bテスト</div>{% endblock %}
+{% block heading %}{{ experiment.name }}{% endblock %}
+{% block subheading %}変えた条件: <strong>{{ experiment.dimension }}</strong> ・ 判定指標 {{ experiment.metric }}{% endblock %}
+
+{% block content %}
+{% set c = experiment.conclusion or {} %}
+<div class="note {{ '' if c.verdict == 'winner' else 'warn' }}">
+  {% if c.verdict == 'winner' %}
+    <strong>勝者: 案 {{ c.winner }}</strong> — {{ c.reason }}
+  {% else %}
+    <strong>まだ結論を出せません</strong> — {{ c.reason or '未計測です。' }}
+  {% endif %}
+</div>
+<p class="sub">1回のテストで変えるのは1条件だけです。フックも尺もタグも同時に変えると、
+どれが効いたのか分からなくなるためです。</p>
+
+<h2>各案</h2>
+<table>
+  <thead><tr><th>案</th><th>変更内容</th><th class="num">投稿数</th>
+             <th class="num">再生</th><th class="num">{{ experiment.metric }}</th>
+             <th class="num">ばらつき</th><th>台本</th></tr></thead>
+  <tbody>
+  {% for v in experiment.variants %}
+    {% set r = v.result or {} %}
+    <tr>
+      <td><strong>{{ v.label }}</strong>
+        {% if experiment.winner_variant_id == v.id %}<span class="pill ok">勝者</span>{% endif %}
+        {% if v.treatment.control %}<span class="pill mute">対照</span>{% endif %}</td>
+      <td class="sub">
+        {% for k, val in v.treatment.items() %}{% if k not in ('dimension','control') %}{{ k }}: {{ val }}<br>{% endif %}{% endfor %}
+      </td>
+      <td class="num">{{ r.sample or 0 }}</td>
+      <td class="num">{{ r.views | int_ if r.sample else '—' }}</td>
+      <td class="num">{{ r[experiment.metric] | pct if r.sample and experiment.metric in r else '—' }}</td>
+      <td class="num sub">{{ r[experiment.metric ~ '_stdev'] | pct if (experiment.metric ~ '_stdev') in r else '—' }}</td>
+      <td>{% if v.script_id %}<a href="/scripts/{{ v.script_id }}">開く</a>{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if c.ranking %}
+<h2>順位</h2>
+<table>
+  <thead><tr><th>案</th><th class="num">{{ experiment.metric }}</th><th>比率</th></tr></thead>
+  <tbody>
+  {% set top = c.ranking[0][1] or 1 %}
+  {% for label, value in c.ranking %}
+    <tr><td>{{ label }}</td><td class="num">{{ value | pct }}</td>
+        <td><div class="bar"><span style="width:{{ ((value / top) * 100) | round(1) }}%"></span></div></td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

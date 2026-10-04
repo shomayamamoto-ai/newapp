@@ -1,0 +1,104 @@
+{% extends "layout.html.j2" %}
+{% block heading %}接続状況{% endblock %}
+{% block subheading %}いまこのインストールで実際にできること{% endblock %}
+
+{% block content %}
+{% if db_warning %}<div class="note warn"><strong>要対応:</strong> {{ db_warning }}</div>{% endif %}
+{% if disk_warning %}<div class="note warn"><strong>要対応:</strong> {{ disk_warning }}</div>{% endif %}
+<h2>プラットフォーム</h2>
+<table>
+  <thead><tr><th>プラットフォーム</th><th>検索</th><th>投稿</th><th>実績取得</th><th>必要なもの</th></tr></thead>
+  <tbody>
+  {% for name, caps in matrix.items() %}
+    <tr>
+      <td><strong>{{ name | upper }}</strong></td>
+      {% for cap in ['search','publish','insights'] %}
+        <td>{% if caps[cap] %}<span class="pill ok">有効</span>{% else %}<span class="pill mute">未設定</span>{% endif %}</td>
+      {% endfor %}
+      <td class="sub">{{ requirements[name] }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div class="note warn">
+  <strong>TikTokの検索は原理的に使えません。</strong>
+  キーワード検索の公開APIが存在せず、Research APIは承認された学術機関限定です。
+  スクレイピングは利用規約違反のため実装していません。
+  <code>snsauto research import &lt;csv&gt;</code> で手動収集またはベンダー取得データを取り込んでください。
+</div>
+
+<h2>公開ストレージ</h2>
+{% if storage.configured %}
+<div class="card">
+  <div class="row" style="gap:14px">
+    <span class="pill ok">{{ storage.backend }}</span>
+    <span class="sub">リンク: {{ storage.links }}</span>
+    {% if storage.bucket %}<span class="sub mono">{{ storage.bucket }}</span>{% endif %}
+    {% if storage.public_base_url %}<span class="sub mono">{{ storage.public_base_url }}</span>{% endif %}
+  </div>
+</div>
+{% else %}
+<div class="note warn">
+  <strong>未設定です。</strong> {{ storage.error }}<br>
+  Instagram は動画を自社サーバーから取りに来る仕様のため、公開HTTPS URL が無いと投稿できません。
+  <code>STORAGE_BACKEND=s3</code> か <code>STORAGE_BACKEND=local</code>（＋<code>SNSAUTO_PUBLIC_BASE_URL</code>）を設定してください。
+</div>
+{% endif %}
+
+<h2>失敗通知</h2>
+<div class="card">
+  {% if mail_configured %}
+    <span class="pill ok">メール有効</span>
+    <span class="sub mono" style="margin-left:8px">{{ alert_email_to }}</span>
+  {% else %}
+    <span class="pill warn">メール未設定</span>
+    <span class="sub" style="margin-left:8px">
+      失敗はダッシュボードの「要対応」に出ます。メールも受け取るなら
+      <code>SMTP_HOST</code> と <code>ALERT_EMAIL_TO</code> を設定してください。</span>
+  {% endif %}
+</div>
+
+<h2>ローカル環境</h2>
+<div class="grid g2">
+  {% for item in environment %}
+  <div class="card">
+    <div class="stat-label">{{ item.name }}</div>
+    <div style="font-size:12px;margin-top:3px">
+      {% if item.ok %}<span class="pill ok">利用可</span>{% else %}<span class="pill warn">未設定</span>{% endif %}
+      <span class="mono" style="color:var(--ink-3)">{{ item.detail }}</span>
+    </div>
+    <p class="sub" style="margin-top:5px">{{ item.note }}</p>
+  </div>
+  {% endfor %}
+</div>
+
+<h2>どの指標が取れるか</h2>
+<p class="sub" style="margin-bottom:8px">
+  <b>自社</b>＝自分が投稿したもの、<b>競合</b>＝他人の投稿。
+  視聴維持率と保存数がほぼ「競合✗」なのは実装の不足ではなく、
+  各プラットフォームのInsights APIが自社アカウントの投稿にしか開放されていないためです。
+</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>指標</th>
+    {% for platform in metric_matrix %}<th colspan="2">{{ platform | upper }}</th>{% endfor %}</tr>
+    <tr><th></th>
+    {% for platform in metric_matrix %}<th class="sub">自社</th><th class="sub">競合</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for metric in ['views','likes','comments','shares','saves','retention_rate','avg_watch_sec'] %}
+    <tr>
+      <td>{{ metric_labels.get(metric, metric) }}</td>
+      {% for platform, rows in metric_matrix.items() %}
+        {% set row = rows.get(metric) %}
+        <td>{% if row and row.own %}<span class="pill ok">✓</span>{% else %}<span class="pill mute">✗</span>{% endif %}</td>
+        <td>{% if row and row.rival %}<span class="pill ok">✓</span>{% else %}<span class="pill mute">✗</span>{% endif %}</td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="sub">YouTube の視聴維持率には <code>yt-analytics.readonly</code> スコープが必要です。
+このスコープが追加される前に連携したアカウントは、再連携するまで維持率が取得されません。</p>
+{% endblock %}

@@ -1,0 +1,13 @@
+.git
+.github
+tests
+workspace
+*.db
+*.sqlite3
+.env
+.venv
+__pycache__
+*.egg-info
+.pytest_cache
+.ruff_cache
+clips

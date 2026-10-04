@@ -1,0 +1,47 @@
+[project]
+name = "snsauto"
+version = "0.1.0"
+description = "SNS operations automation: research -> script -> storyboard -> video -> publish -> analyze -> PDCA"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "SQLAlchemy>=2.0",
+    "httpx>=0.27",
+    "Jinja2>=3.1",
+    "typer>=0.12",
+    "rich>=13.7",
+    "python-dateutil>=2.9",
+    "imageio-ffmpeg>=0.5",
+    "Pillow>=10.2",
+    "alembic>=1.13",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.39"]
+# python-multipart は FastAPI がフォームを受け取るのに必要。fastapi 単体では入らず、
+# 無いとログインを含むすべてのフォーム送信が 500 になる。
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9"]
+pdf = ["playwright>=1.44"]
+storage = ["boto3>=1.34"]
+dev = ["pytest>=8.1", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+snsauto = "snsauto.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+snsauto = ["reporting/templates/*.j2", "web/templates/*.j2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: exercises ffmpeg or a headless browser (deselect with -m 'not slow')",
+]

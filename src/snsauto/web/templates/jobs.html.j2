@@ -1,0 +1,57 @@
+{% extends "layout.html.j2" %}
+{% block heading %}実行履歴{% endblock %}
+{% block subheading %}Webから実行した処理の状態{% endblock %}
+
+{% block content %}
+{% if jobs %}
+<table>
+  <thead><tr><th>#</th><th>種別</th><th>状態</th><th>結果</th><th>所要</th><th>実行</th></tr></thead>
+  <tbody>
+  {% for job in jobs %}
+    <tr data-job="{{ job.id }}">
+      <td class="mono">{{ job.id }}</td>
+      <td>{{ job.kind }}</td>
+      <td class="js-status">
+        <span class="pill {{ 'ok' if job.status.value == 'succeeded' else ('bad' if job.status.value == 'failed' else 'warn') }}">{{ job.status.value }}</span>
+      </td>
+      <td class="js-detail sub" style="max-width:420px">
+        {% if job.error %}{{ job.error | truncate(120) }}
+        {% elif job.result %}{{ job.result | tojson | truncate(120) }}
+        {% else %}—{% endif %}
+      </td>
+      <td class="num sub">
+        {% if job.started_at and job.finished_at %}{{ ((job.finished_at - job.started_at).total_seconds()) | round(1) }}s{% else %}—{% endif %}
+      </td>
+      <td class="sub">{{ job.created_at | dt }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<script>
+// Poll only the rows that are still moving, and stop once they settle.
+const pending = [...document.querySelectorAll('tr[data-job]')].filter(
+  row => !['succeeded','failed'].includes(row.querySelector('.pill').textContent.trim()));
+if (pending.length) {
+  const timer = setInterval(async () => {
+    let live = 0;
+    for (const row of pending) {
+      const res = await fetch(`/api/jobs/${row.dataset.job}`);
+      if (!res.ok) continue;
+      const job = await res.json();
+      const pill = row.querySelector('.pill');
+      pill.textContent = job.status;
+      pill.className = 'pill ' + (job.status === 'succeeded' ? 'ok'
+                                : job.status === 'failed' ? 'bad' : 'warn');
+      if (job.finished) {
+        row.querySelector('.js-detail').textContent =
+          job.error || JSON.stringify(job.result || {}).slice(0, 120);
+      } else { live++; }
+    }
+    if (!live) clearInterval(timer);
+  }, 2500);
+}
+</script>
+{% else %}
+<p class="empty">まだ実行履歴がありません。</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "layout.html.j2" %}
+{% block crumb %}<div class="crumb"><a href="/">ダッシュボード</a> / <a href="/projects/{{ project.id }}">{{ project.name }}</a> / PDCA</div>{% endblock %}
+{% block heading %}{{ cycle.title }}{% endblock %}
+{% block subheading %}段階 {{ cycle.stage.value | upper }}{% if cycle.verdict %} ・ 判定 {{ cycle.verdict }}{% endif %}{% endblock %}
+{% block actions %}<a class="btn ghost" href="/cycles/{{ cycle.id }}/report">レポート</a>{% endblock %}
+
+{% block content %}
+<h2>Plan</h2>
+<div class="note"><strong>仮説:</strong> {{ cycle.hypothesis or '未設定' }}</div>
+{% if cycle.target %}
+<div class="grid g3">
+  <div class="card"><div class="stat-label">指標</div><div class="stat" style="font-size:14px">{{ cycle.target.metric or '-' }}</div></div>
+  <div class="card"><div class="stat-label">目標</div><div class="stat">{{ cycle.target.target or '-' }}</div></div>
+  <div class="card"><div class="stat-label">ベースライン</div><div class="stat">{{ cycle.target.baseline if cycle.target.baseline is not none else '-' }}</div></div>
+</div>
+{% endif %}
+{% if cycle.actions %}<h3>実施予定</h3><ul style="font-size:12px">{% for a in cycle.actions %}<li>{{ a }}</li>{% endfor %}</ul>{% endif %}
+
+<h2>Check</h2>
+{% set ev = (cycle.result or {}).get('evaluation') %}
+{% if ev %}
+<div class="grid g4">
+  <div class="card"><div class="stat-label">判定</div>
+    <div class="stat" style="font-size:15px"><span class="pill {{ ev.verdict }}">{{ ev.verdict }}</span></div></div>
+  <div class="card"><div class="stat-label">実測</div><div class="stat">{{ ev.actual if ev.actual is not none else '-' }}</div></div>
+  <div class="card"><div class="stat-label">目標</div><div class="stat">{{ ev.target if ev.target is not none else '-' }}</div></div>
+  <div class="card"><div class="stat-label">対ベースライン</div>
+    <div class="stat">{{ '%+.4f' | format(ev.delta_vs_baseline) if ev.delta_vs_baseline is number else '-' }}</div></div>
+</div>
+<div class="note {{ 'warn' if ev.verdict == 'inconclusive' }}">{{ ev.reason }}</div>
+
+<div class="note">
+  <strong>この判定がどれだけ言えるか</strong>
+  <ul class="tight">
+    <li>対象 {{ ev.sample }}本
+      {%- if ev.baseline_sample %} / 比較対象 {{ ev.baseline_sample }}本{% endif %}
+      — <span class="{{ 'warn' if ev.reliability in ('insufficient', 'weak') }}">{{ RELIABILITY_JA.get(ev.reliability, ev.reliability) }}</span></li>
+    {% if ev.relative_change is number and ev.detectable_change is number %}
+    <li>測定した変化 <strong>{{ '%+.0f' | format(ev.relative_change * 100) }}%</strong>
+      に対し、この本数で判別できるのは <strong>{{ '%.0f' | format(ev.detectable_change * 100) }}%以上</strong> の差までです。
+      {%- if ev.relative_change | abs < ev.detectable_change %}
+      <span class="warn">＝ この差はばらつきと区別できません。</span>{% endif %}</li>
+    {% endif %}
+    {% if ev.significance and ev.significance.comparable %}
+    <li>{{ '%.0f' | format(ev.significance.confidence * 100) }}%信頼区間
+      [{{ '%+.4f' | format(ev.significance.low) }}, {{ '%+.4f' | format(ev.significance.high) }}]
+      — {% if ev.significance.significant %}ゼロを含まないため、偶然では説明しにくい差です{% else %}ゼロを含むため、差があるとは言えません{% endif %}</li>
+    {% endif %}
+    <li>比較方法:
+      {%- if ev.age_matched %} 公開24時間後の値どうしを比較（累計値で比べると、古い投稿ほど有利になるため）
+      {%- else %} 最新の累計値で比較{% endif %}
+      {%- if ev.platform_scope and ev.platform_scope != 'mixed' %} ・ {{ ev.platform_scope | upper }} 内でのみ比較{% endif %}</li>
+    {% if ev.excluded %}
+    <li class="sub">除外: {% for reason, n in ev.excluded.items() %}{{ EXCLUSION_PDCA_JA.get(reason, reason) }} {{ n }}本{% if not loop.last %} / {% endif %}{% endfor %}</li>
+    {% endif %}
+    {% if ev.baseline_drifted and ev.planned_baseline is number %}
+    <li class="sub">計画時のベースライン {{ ev.planned_baseline }} ではなく、このサイクルの投稿を除いた {{ ev.baseline }} と比較しています。</li>
+    {% endif %}
+    {% if posts_needed and posts_needed.more %}
+      {% if posts_needed.reachable %}
+    <li><strong>あと約{{ posts_needed.more }}本</strong>投稿すれば、この差を判定できる見込みです。</li>
+      {% else %}
+    <li class="warn">この差を証明するには約{{ posts_needed.estimated }}本の追加が必要です。<strong>追いかける価値があるほど大きい差ではありません。</strong></li>
+      {% endif %}
+    {% endif %}
+  </ul>
+</div>
+{% else %}<p class="empty">未計測です。</p>{% endif %}
+
+{% set posts = (cycle.result or {}).get('per_post') %}
+{% if posts %}
+<table>
+  <thead><tr><th>プラットフォーム</th><th class="num">再生</th><th class="num">エンゲージ率</th><th class="num">再生/時</th></tr></thead>
+  <tbody>
+  {% for row in posts %}
+    <tr><td>{{ row.platform | upper }}</td><td class="num">{{ row.views | int_ }}</td>
+        <td class="num">{{ row.engagement_rate | pct }}</td><td class="num">{{ row.views_per_hour | int_ }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Act</h2>
+{% if cycle.learnings %}<div class="note"><strong>学び:</strong> {{ cycle.learnings }}</div>{% endif %}
+{% if cycle.next_actions %}
+<table>
+  <thead><tr><th>次のアクション</th><th>理由</th><th>優先度</th></tr></thead>
+  <tbody>
+  {% for a in cycle.next_actions %}
+    <tr><td>{{ a.action if a is mapping else a }}</td>
+        <td class="sub">{{ a.reason if a is mapping else '' }}</td>
+        <td>{% if a is mapping and a.priority %}<span class="pill mute">{{ a.priority }}</span>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="empty">サイクル未クローズです。</p>{% endif %}
+{% endblock %}

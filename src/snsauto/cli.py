@@ -1,0 +1,1742 @@
+"""Command line interface."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import click
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from .config import get_settings
+from .db import init_db, session_scope
+from .models import (
+    Experiment, PdcaCycle, Platform, Project, ResearchRun, Script, User,
+)
+from .pipeline import Pipeline
+from .research.comments import summarize_comments
+from .research.keyword import build_options
+from .research.watch import diff_runs
+from .platforms import capability_matrix
+from .platforms.tiktok import TikTokAdapter
+from .reporting.templates import TemplateRegistry, list_templates
+
+class _SnsApp(typer.Typer):
+    """``app()`` と ``main()`` のどちらで起動しても同じ動きにする。
+
+    pyproject の入口は ``snsauto.cli:main`` だが、入口を変える前にインストール
+    された環境ではコンソールスクリプトが ``app()`` を直接呼ぶ。再インストール
+    するまで、エラーの日本語説明も設定名の警告も新しいDBの通知も一切出ない。
+    実際にこのツールの開発環境で起きていた。入口の記述に頼らず、呼ばれた
+    時点で必ず同じ処理を通す。
+    """
+
+    def __call__(self, *args, **kwargs):
+        return _run(lambda: super(_SnsApp, self).__call__(*args, **kwargs))
+
+
+app = _SnsApp(
+    help="SNS運用自動化ツール — 競合調査から台本・動画・投稿・PDCAまで。",
+    no_args_is_help=True,
+    # Rich's traceback is for the people who wrote this, not the people who
+    # run it. Failures are explained by `_run()` below instead.
+    pretty_exceptions_enable=False,
+)
+project_app = typer.Typer(help="プロジェクト（クライアント／ブランド）の管理。", no_args_is_help=True)
+research_app = typer.Typer(help="キーワード調査と競合分析。", no_args_is_help=True)
+create_app = typer.Typer(help="台本・絵コンテ・動画の生成。", no_args_is_help=True)
+metrics_app = typer.Typer(help="実績の収集と確認。", no_args_is_help=True)
+pdca_app = typer.Typer(help="PDCAサイクルの管理。", no_args_is_help=True)
+report_app = typer.Typer(help="HTML / PDF レポートの出力。", no_args_is_help=True)
+template_app = typer.Typer(help="レポートのテンプレート管理。", no_args_is_help=True)
+footage_app = typer.Typer(help="実写・ストック素材のライブラリ。", no_args_is_help=True)
+worker_app = typer.Typer(help="予約投稿と実績収集の常駐ワーカー。", no_args_is_help=True)
+ab_app = typer.Typer(help="A/Bテスト。", no_args_is_help=True)
+user_app = typer.Typer(help="Web UI のログインユーザー管理。", no_args_is_help=True)
+workspace_app = typer.Typer(help="ワークスペースの容量確認と手動削除。", no_args_is_help=True)
+watch_app = typer.Typer(help="競合アカウントの定点ウォッチと差分。", no_args_is_help=True)
+setup_app = typer.Typer(help="接続までの手順と、アプリ審査の申請資料。", no_args_is_help=True)
+edit_app = typer.Typer(help="撮影した素材の無音カットと言い直しの確認。", no_args_is_help=True)
+migrate_app = typer.Typer(help="移行ファイルの書き出しと取り込み（別のツール・別のサーバーへ）。", no_args_is_help=True)
+
+app.add_typer(project_app, name="project")
+app.add_typer(research_app, name="research")
+app.add_typer(watch_app, name="watch")
+app.add_typer(create_app, name="create")
+app.add_typer(metrics_app, name="metrics")
+app.add_typer(pdca_app, name="pdca")
+app.add_typer(report_app, name="report")
+app.add_typer(template_app, name="template")
+app.add_typer(footage_app, name="footage")
+app.add_typer(worker_app, name="worker")
+app.add_typer(ab_app, name="ab")
+app.add_typer(user_app, name="user")
+app.add_typer(workspace_app, name="workspace")
+app.add_typer(setup_app, name="setup")
+app.add_typer(edit_app, name="edit")
+app.add_typer(migrate_app, name="migrate")
+
+console = Console()
+# 警告は stderr に出す。JSON出力をパイプしている利用者の結果を汚さないため。
+err_console = Console(stderr=True)
+
+
+def _get_project(session, name: str) -> Project:
+    project = session.query(Project).filter_by(name=name).one_or_none()
+    if project is None:
+        raise typer.BadParameter(f"「{name}」というプロジェクトがありません。`snsauto project create {name}` で作成してください")
+    return project
+
+
+@app.command()
+def init():
+    """データベースとワークスペースを作成する（最初に一度だけ）。"""
+    settings = get_settings()
+    settings.ensure_workspace()
+    init_db()
+    console.print("[green]初期化しました。[/green]")
+    console.print(f"  ワークスペース: {settings.workspace}")
+    console.print(f"  データベース  : {settings.db_url}")
+    console.print("\n[bold]次にやること[/bold]")
+    console.print("  1. `snsauto project create <ブランド名>` でプロジェクトを作る")
+    console.print("  2. `snsauto doctor` で不足している接続情報を確認する")
+    console.print("  3. `snsauto serve` で Web UI を開く（http://127.0.0.1:8000）")
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    reload: bool = typer.Option(False, "--reload"),
+):
+    """Web UI を起動する。"""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter(
+            "Web UI の依存関係が未インストールです。`pip install 'snsauto[web]'` を実行してください"
+        ) from exc
+
+    settings = get_settings()
+    settings.ensure_workspace()
+    init_db()
+    from .db import database_label
+
+    # worker の起動表示と同じ場所を出す。journalctl で並べて、同じDBを
+    # 見ているかを確かめられるように。
+    console.print(
+        f"[green]起動しました:[/green] http://{host}:{port}（DB {database_label()}）"
+    )
+    uvicorn.run(
+        "snsauto.web.app:create_app",
+        host=host, port=port, reload=reload, factory=True,
+    )
+
+
+@app.command()
+def verify(
+    platform: Platform = typer.Option(None, "--platform", "-p", help="1つだけ検証"),
+    project: str = typer.Option(None, "--project"),
+    keyword: str = typer.Option("news", "--keyword", help="検索の確認に使う語"),
+):
+    """各プラットフォームへの実接続を読み取り専用で確認する。投稿はしません。"""
+    init_db()
+    from .platforms.verify import ConnectionVerifier
+
+    with session_scope() as session:
+        project_id = _get_project(session, project).id if project else None
+        verifier = ConnectionVerifier(session, get_settings())
+        reports = (
+            [verifier.verify(platform, project_id, keyword=keyword)] if platform
+            else verifier.verify_all(project_id, keyword=keyword)
+        )
+
+        marks = {"ok": "[green]OK[/green]", "fail": "[red]NG[/red]",
+                 "skip": "[dim]--[/dim]"}
+        problems = 0
+        for report in reports:
+            table = Table(title=report.platform.upper(), header_style="bold",
+                          title_justify="left")
+            table.add_column("項目", width=12)
+            table.add_column("", width=4)
+            table.add_column("結果", max_width=60)
+            for check in report.checks:
+                table.add_row(check.name, marks[check.status], check.detail)
+                if check.fix:
+                    table.add_row("", "", f"[yellow]→ {check.fix}[/yellow]")
+            console.print(table)
+            problems += len(report.failed)
+
+        if problems:
+            console.print(f"\n[red]{problems}件の問題[/red]があります。"
+                          "上の → の指示を確認してください。")
+            raise typer.Exit(1)
+        console.print("\n[green]接続に問題は見つかりませんでした。[/green]")
+
+
+@app.command()
+def doctor():
+    """いま何ができて、何が足りないかを表示する。"""
+    from .errors import PLATFORM_SETUP
+    from .llm import build_client
+    from .media.ffmpeg import ffmpeg_path
+    from .reporting.pdf import chromium_executable
+    from .workspace import warning as workspace_warning
+
+    settings = get_settings()
+    matrix = capability_matrix(settings)
+
+    table = Table(title="プラットフォーム", header_style="bold", title_justify="left")
+    table.add_column("媒体")
+    table.add_column("検索", justify="center")
+    table.add_column("投稿", justify="center")
+    table.add_column("実績", justify="center")
+    table.add_column("足りないもの", max_width=46)
+    todo: list[str] = []
+    for platform, caps in matrix.items():
+        missing = ""
+        if not any(caps[c] for c in ("search", "publish", "insights")):
+            needs, _ = PLATFORM_SETUP.get(platform, ("", ""))
+            missing = f"[yellow]{needs}[/yellow]"
+            todo.append(platform)
+        table.add_row(
+            platform.upper(),
+            *["[green]可[/green]" if caps[c] else "[dim]—[/dim]"
+              for c in ("search", "publish", "insights")],
+            missing,
+        )
+    console.print(table)
+
+    # Local tooling. Each line says what stops working without it, because
+    # "chromium: not found" does not tell anyone whether that matters.
+    console.print("\n[bold]ローカル環境[/bold]")
+    try:
+        console.print(f"  ffmpeg      [green]可[/green]  {Path(ffmpeg_path()).name}")
+    except Exception as exc:
+        console.print(f"  ffmpeg      [red]不可[/red]  {exc}")
+        console.print("              [yellow]動画の生成とカット検出ができません[/yellow]")
+
+    chromium = chromium_executable()
+    console.print(
+        f"  Chromium    [green]可[/green]  {Path(chromium).name}" if chromium else
+        "  Chromium    [yellow]未[/yellow]  PDF出力は不可。HTMLレポートは出せます"
+    )
+
+    if build_client(settings):
+        console.print(f"  生成AI      [green]可[/green]  {settings.llm_model}")
+    else:
+        console.print("  生成AI      [yellow]未[/yellow]  ANTHROPIC_API_KEY 未設定")
+        console.print("              [yellow]台本は簡易版で生成されます（動作はします）[/yellow]")
+
+    ok, detail = _ocr_state()
+    console.print(
+        f"  テロップOCR [green]可[/green]  {detail}" if ok else
+        f"  テロップOCR [yellow]未[/yellow]  {detail or 'tesseract 未インストール'}"
+    )
+    if not ok:
+        console.print("              [yellow]apt install tesseract-ocr tesseract-ocr-jpn[/yellow]")
+
+    note = workspace_warning(settings.workspace)
+    if note:
+        console.print(f"\n[yellow]{note}[/yellow]")
+
+    # どのデータを見ているか。既定の場所は起動フォルダからの相対なので、
+    # 別の場所から起動すると別の（空の）DBになる。
+    from .config import unknown_settings
+    from .db import database_label, sqlite_path
+
+    console.print("\n[bold]データの場所[/bold]")
+    console.print(f"  データベース  {database_label()}")
+    console.print(f"  作業フォルダ  {Path(settings.workspace).resolve()}")
+    path = sqlite_path()
+    if path is not None and not Path(path).is_absolute():
+        console.print(
+            "  [yellow]起動したフォルダからの相対パスです。別の場所から起動すると"
+            "別のDBになります。SNSAUTO_DB_URL を絶対パスで指定すると確実です。[/yellow]"
+        )
+
+    unread = unknown_settings(strict=True)
+    if unread:
+        console.print("\n[bold]読まれていない設定名[/bold]")
+        for key, suggestion, origin in unread:
+            hint = f" → {suggestion} の間違い？" if suggestion else ""
+            console.print(f"  [yellow]{key}[/yellow]  （{origin}）{hint}")
+
+    console.print("\n[bold]次にやること[/bold]")
+    if todo:
+        console.print(f"  1. 未設定の媒体（{', '.join(t.upper() for t in todo)}）の接続情報を "
+                      ".env に設定するか、Web UI の /accounts から連携する")
+        console.print("  2. `snsauto verify` で実際に繋がるか確認する（読み取り専用）")
+        console.print("  3. `snsauto research run <プロジェクト> \"キーワード\"` で調査を開始する")
+    else:
+        console.print("  `snsauto verify` で実接続を確認し、`snsauto research run` から始められます。")
+
+    console.print("\n[dim]TikTok の検索は原理的に使えません（公開キーワード検索APIが"
+                  "存在しないため）。`snsauto research import` でCSVを取り込んでください。[/dim]")
+
+    # The reviews are invisible from here: every capability above can read
+    # "可" while an unaudited project still locks every upload to private.
+    console.print("[dim]接続の先には各社の審査があります（YouTube と TikTok は"
+                  "通るまで投稿が非公開に固定されます）。"
+                  "`snsauto setup gates` で一覧、"
+                  "`snsauto setup connect <媒体>` で手順を表示します。[/dim]")
+
+
+def _ocr_state() -> tuple[bool, str]:
+    from .web.app import _ocr_status
+
+    return _ocr_status()
+
+
+# ---------------- project ----------------
+
+@project_app.command("create")
+def project_create(
+    name: str,
+    description: str = typer.Option("", "--description", "-d"),
+    brand_profile: Path = typer.Option(None, "--brand-profile", help="JSONファイル: トーン・ペルソナ・禁止語"),
+):
+    """プロジェクト（クライアント／ブランド）を作る。"""
+    init_db()
+    profile = json.loads(brand_profile.read_text(encoding="utf-8")) if brand_profile else {}
+    with session_scope() as session:
+        if session.query(Project).filter_by(name=name).one_or_none():
+            raise typer.BadParameter(f"プロジェクト「{name}」は既に存在します")
+        project = Project(name=name, description=description, brand_profile=profile)
+        session.add(project)
+        session.flush()
+        console.print(f"[green]プロジェクトを作成しました:[/green] {project.name}（id={project.id}）")
+
+
+@project_app.command("list")
+def project_list():
+    """プロジェクト一覧。"""
+    init_db()
+    with session_scope() as session:
+        table = Table(header_style="bold")
+        table.add_column("id", justify="right")
+        table.add_column("名前")
+        table.add_column("調査", justify="right")
+        table.add_column("台本", justify="right")
+        table.add_column("PDCA", justify="right")
+        for p in session.query(Project).order_by(Project.id):
+            table.add_row(str(p.id), p.name, str(len(p.research_runs)),
+                          str(len(p.scripts)), str(len(p.pdca_cycles)))
+        console.print(table)
+
+
+@metrics_app.command("retention")
+def metrics_retention(publication_id: int):
+    """視聴維持カーブを、その動画のカット割りと重ねて表示する。"""
+    init_db()
+    from .analytics.collect import retention_report
+    from .models import Publication
+
+    with session_scope() as session:
+        publication = session.get(Publication, publication_id)
+        if publication is None:
+            raise typer.BadParameter(f"投稿ID {publication_id} が見つかりません")
+        report = retention_report(publication)
+        if not report.get("measured"):
+            console.print(f"[yellow]{report['reason']}[/yellow]")
+            raise typer.Exit(0)
+
+        console.print(f"[bold]{report['summary']}[/bold]\n")
+        table = Table(title="離脱点", header_style="bold", title_justify="left")
+        table.add_column("時刻", justify="right")
+        table.add_column("離脱", justify="right")
+        table.add_column("残存", justify="right")
+        table.add_column("その時の画面", max_width=52)
+        for fall in report["drop_offs"]:
+            shot = fall.get("on_screen") or {}
+            telop = (shot.get("telop") or "").replace("\n", " ")
+            table.add_row(
+                f"{fall['from_sec']:.1f}s", f"-{fall['lost']:.0%}",
+                f"{fall['remaining']:.0%}",
+                f"{shot.get('index', 0) + 1}カット目 「{telop[:24]}」"
+                f"{shot.get('telop_chars', 0)}字/{shot.get('hold_sec', 0)}秒"
+                if shot else "-",
+            )
+        console.print(table)
+        if report.get("relative_performance") is not None:
+            console.print(f"同尺動画との比較: {report['relative_performance']:.2f} "
+                          "[dim](1.0で平均並み)[/dim]")
+        for note in report.get("notes") or []:
+            console.print(f"  [yellow]・{note}[/yellow]")
+
+
+# ---------------- workspace ----------------
+
+@workspace_app.command("usage")
+def workspace_usage():
+    """ワークスペースが何をどれだけ抱えているかを表示する。"""
+    from .workspace import free_bytes, usage, warning
+
+    settings = get_settings()
+    rows = usage(settings.workspace)
+    table = Table(title=str(settings.workspace), header_style="bold", title_justify="left")
+    table.add_column("種別")
+    table.add_column("内容", max_width=34)
+    table.add_column("件数", justify="right")
+    table.add_column("容量", justify="right")
+    table.add_column("最古", justify="right")
+    table.add_column("削除可")
+    for row in rows:
+        table.add_row(
+            row.category, row.label, str(row.files), f"{row.megabytes:,.1f}MB",
+            f"{row.oldest_days:.0f}日" if row.oldest_days else "-",
+            "[green]可[/green]" if row.disposable else "[yellow]要注意[/yellow]",
+        )
+    console.print(table)
+    free = free_bytes(settings.workspace)
+    if free is not None:
+        console.print(f"ディスク空き: {free / 1073741824:.1f}GB")
+    note = warning(settings.workspace)
+    if note:
+        console.print(f"[yellow]{note}[/yellow]")
+    console.print("[dim]自動削除は行いません。削除は `snsauto workspace clean` で明示的に実行してください。[/dim]")
+
+
+@workspace_app.command("clean")
+def workspace_clean(
+    older_than: float = typer.Option(0.0, "--older-than", help="この日数より古いファイルのみ"),
+    category: list[str] = typer.Option(None, "--category", "-c",
+                                       help="既定はキャッシュ系のみ。完成動画やレポートは対象外"),
+    apply: bool = typer.Option(False, "--apply", help="実際に削除する（既定は確認のみ）"),
+):
+    """キャッシュを手動で削除する。既定は削除内容の確認だけ。"""
+    from .workspace import apply_clean, plan_clean
+
+    settings = get_settings()
+    removals = plan_clean(settings.workspace, list(category) if category else None, older_than)
+    if not removals:
+        console.print("削除対象はありません。")
+        raise typer.Exit(0)
+
+    total = sum(r.bytes for r in removals)
+    console.print(f"対象 {len(removals)}件 / {total / 1048576:,.1f}MB")
+    for removal in removals[:10]:
+        console.print(f"  {removal.bytes / 1048576:>8,.1f}MB  {removal.age_days:>5.0f}日前  "
+                      f"{removal.path.name}")
+    if len(removals) > 10:
+        console.print(f"  [dim]... 他 {len(removals) - 10}件[/dim]")
+
+    if not apply:
+        console.print("\n[dim]確認のみです。実行するには --apply を付けてください。[/dim]")
+        raise typer.Exit(0)
+
+    count, freed = apply_clean(removals)
+    console.print(f"[green]{count}件 / {freed / 1048576:,.1f}MB を削除しました。[/green]")
+
+
+# ---------------- watch ----------------
+
+@watch_app.command("add")
+def watch_add(
+    project: str,
+    handle: str,
+    platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
+    label: str = typer.Option(None, "--label"),
+):
+    """定点ウォッチする競合を登録する。"""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        account = Pipeline(session).watch.add(proj, platform, handle, label)
+        console.print(
+            f"[green]定点ウォッチに追加しました:[/green] {account.display}"
+            f"（{platform.value} / id={account.id}）"
+        )
+
+
+@watch_app.command("list")
+def watch_list(project: str):
+    """ウォッチ中の競合と、最終確認日時を表示する。"""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        table = Table(title=f"Watched competitors - {proj.name}", header_style="bold")
+        for column in ("id", "platform", "handle", "label", "last checked"):
+            table.add_column(column)
+        for account in proj.competitor_accounts:
+            table.add_row(
+                str(account.id), account.platform.value, f"@{account.handle}",
+                account.label or "-",
+                account.last_checked_at.strftime("%Y-%m-%d %H:%M")
+                if account.last_checked_at else "[dim]never[/dim]",
+            )
+        console.print(table)
+
+
+@watch_app.command("sweep")
+def watch_sweep(
+    project: str,
+    limit: int = typer.Option(25, "--limit", "-n"),
+):
+    """全競合をスイープし、前回からの変化を表示する。"""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        outcome = Pipeline(session).sweep_competitors(proj, limit=limit)
+        console.print(f"[green]{len(outcome['runs'])}件の競合をスイープしました[/green]")
+        for name, reason in (outcome.get("failed") or {}).items():
+            console.print(f"  [yellow]{name}[/yellow]: {reason}")
+        for name, trend in (outcome.get("trends") or {}).items():
+            if not trend.get("comparable"):
+                console.print(f"  [dim]{name}: {trend.get('reason')}[/dim]")
+                continue
+            console.print(f"  [bold]{name}[/bold]: {trend['headline']}")
+        if not outcome.get("trends"):
+            console.print(
+                "[dim]初回スイープのため比較対象がありません。"
+                "次回から差分が出ます。[/dim]"
+            )
+
+
+@watch_app.command("diff")
+def watch_diff(run_a: int, run_b: int):
+    """同じ対象の2回の調査を比較する。"""
+    init_db()
+    with session_scope() as session:
+        first = session.get(ResearchRun, run_a)
+        second = session.get(ResearchRun, run_b)
+        if not first or not second:
+            raise typer.BadParameter("調査が見つかりません")
+        result = diff_runs(first, second)
+        if not result.get("comparable"):
+            console.print(f"[yellow]{result.get('reason')}[/yellow]")
+            raise typer.Exit(1)
+        console.print(f"[bold]{result['headline']}[/bold]")
+        for key in ("engagement", "views", "duration", "followers"):
+            change = result.get(key)
+            if change:
+                mark = "*" if change["material"] else " "
+                console.print(
+                    f" {mark} {key:<12} {change['before']} -> {change['after']} "
+                    f"({change['change']:+.1%})"
+                )
+        console.print("[dim]* = ノイズ水準(±15%)を超えた変化[/dim]")
+
+
+# ---------------- research ----------------
+
+@research_app.command("run")
+def research_run(
+    project: str,
+    keyword: str,
+    platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
+    limit: int = typer.Option(50, "--limit", "-n"),
+    analyze: bool = typer.Option(True, "--analyze/--no-analyze", help="上位投稿の構成を分解する"),
+    within_days: int = typer.Option(None, "--within-days", help="直近N日の投稿だけに絞る"),
+    duration_band: str = typer.Option(None, "--duration", help="尺: short | medium | long"),
+    order: str = typer.Option(None, "--order", help="並び順: relevance | date | views"),
+    comments: bool = typer.Option(False, "--comments", help="上位投稿のコメント本文も取得する"),
+):
+    """キーワードの上位N件を集めて順位付けする。"""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        pipeline = Pipeline(session)
+        options = build_options(pipeline.settings)
+        if within_days is not None:
+            options.published_within_days = within_days
+        if duration_band:
+            options.video_duration = duration_band
+        if order:
+            options.order = order
+
+        run = pipeline.research.run(proj, keyword, platform, limit=limit,
+                                    options=options)
+        console.print(f"[green]{len(run.posts)}件を取得しました[/green]（調査ID={run.id}）")
+        _print_filters(run)
+        if analyze:
+            n = pipeline.analyze_structures(run)
+            console.print(f"上位{n}件の構成を分析しました")
+        if comments:
+            mined = pipeline.mine_comments(run)
+            console.print(f"コメントを{mined}件取得しました")
+        _print_top(run)
+
+
+def _print_filters(run: ResearchRun) -> None:
+    """Say which filters the platform honoured - and which it silently did not."""
+    filters = run.filters or {}
+    ignored = filters.get("ignored") or {}
+    dropped = filters.get("dropped") or {}
+    if filters.get("applied"):
+        console.print(f"[dim]適用した絞り込み: {filters['applied']}[/dim]")
+    if ignored:
+        console.print(
+            f"[yellow]{run.platform.value} で無視した条件:[/yellow] {ignored} "
+            "[dim]（このAPIでは指定できない条件です）[/dim]"
+        )
+    if dropped:
+        console.print(f"[dim]除外 {sum(dropped.values())}件: {dropped}[/dim]")
+
+
+@research_app.command("import")
+def research_import(
+    project: str,
+    keyword: str,
+    csv_path: Path,
+    platform: Platform = typer.Option(Platform.TIKTOK, "--platform", "-p"),
+):
+    """CSVから競合投稿を取り込む（検索APIが無い媒体向け）。"""
+    init_db()
+    records = TikTokAdapter.ingest_manual(csv_path)
+    for r in records:
+        r.platform = platform
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        run = Pipeline(session).collect_research(
+            proj, keyword, platform, len(records), records=records
+        )
+        console.print(f"[green]{len(run.posts)}件を取り込みました[/green]（調査ID={run.id}）")
+        _print_top(run)
+
+
+@research_app.command("audio")
+def research_audio(
+    run_id: int,
+    top_n: int = typer.Option(12, "--top"),
+):
+    """取得済みの動画から、同じ音源を使っている投稿を探す。"""
+    init_db()
+    with session_scope() as session:
+        run = session.get(ResearchRun, run_id)
+        if not run:
+            raise typer.BadParameter(f"調査ID {run_id} が見つかりません")
+        result = Pipeline(session).analyze_shared_audio(run, top_n=top_n)
+        if not result.get("usable"):
+            console.print(f"[yellow]{result.get('reason')}[/yellow]")
+            raise typer.Exit(0)
+
+        console.print(f"{result['analysed']}本を解析（対象 {result['considered']}本）")
+        if result.get("failed"):
+            console.print(f"[dim]解析できず: {len(result['failed'])}本[/dim]")
+        groups = result["shared_groups"]
+        if not groups:
+            console.print("同じ音源を使っている組み合わせは見つかりませんでした。")
+            raise typer.Exit(0)
+        for i, group in enumerate(groups, 1):
+            console.print(f"  [bold]グループ{i}[/bold]（{len(group)}本）: "
+                          + ", ".join(group))
+        console.print(f"[dim]{result['note']}[/dim]")
+
+
+@research_app.command("comments")
+def research_comments(
+    run_id: int,
+    top_n: int = typer.Option(10, "--top", help="上位何件からコメントを取得するか"),
+):
+    """上位投稿のコメント本文を取得し、何を聞かれているかを集計する。"""
+    init_db()
+    with session_scope() as session:
+        run = session.get(ResearchRun, run_id)
+        if not run:
+            raise typer.BadParameter(f"調査ID {run_id} が見つかりません")
+        added = Pipeline(session).comments.mine_run(run, top_n=top_n)
+        comments = [c for p in run.posts for c in p.comments_mined]
+        summary = summarize_comments(comments)
+        console.print(f"[green]新規コメントを{added}件取得しました[/green] "
+                      f"（累計 {summary.get('count', 0)}件）")
+        if not summary.get("count"):
+            console.print(
+                "[dim]このランのプラットフォームではコメント本文を取得できません"
+                "（Instagram は自社投稿のみ、TikTok は検索自体が不可）。[/dim]"
+            )
+            return
+        console.print(f"質問の割合: {summary['question_share']:.0%}  "
+                      f"内訳: {summary['intent_mix']}")
+        table = Table(title="よく聞かれていること", header_style="bold")
+        table.add_column("いいね", justify="right")
+        table.add_column("コメント", max_width=70)
+        for row in summary["top_questions"]:
+            table.add_row(str(row["likes"]), row["text"].replace("\n", " "))
+        console.print(table)
+
+
+def _print_top(run: ResearchRun, n: int = 10):
+    table = Table(title=f"Top {n} - {run.keyword}", header_style="bold")
+    table.add_column("#", justify="right")
+    table.add_column("タイトル", max_width=48)
+    table.add_column("再生", justify="right")
+    table.add_column("反応率", justify="right")
+    table.add_column("スコア", justify="right")
+    for post in sorted(run.posts, key=lambda p: p.rank)[:n]:
+        table.add_row(str(post.rank), (post.title or post.external_id)[:48],
+                      f"{post.views:,}", f"{post.engagement_rate:.2%}", f"{post.score:.3f}")
+    console.print(table)
+
+
+# ---------------- create ----------------
+
+@create_app.command("all")
+def create_all(
+    project: str,
+    keyword: str,
+    platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
+    duration: float = typer.Option(30.0, "--duration", "-d"),
+    limit: int = typer.Option(50, "--limit", "-n"),
+    publish: list[Platform] = typer.Option([], "--publish", help="指定した媒体の連携済みアカウント全てに投稿"),
+    account: list[int] = typer.Option([], "--account", help="指定したアカウントIDにだけ投稿"),
+    bgm: Path = typer.Option(None, "--bgm"),
+    live: bool = typer.Option(False, "--live", help="実際に投稿する（既定はドライラン）"),
+    csv_path: Path = typer.Option(None, "--csv", help="検索APIの代わりにCSVを使う"),
+):
+    """調査から動画・レポートまで一気に実行する。"""
+    init_db()
+    get_settings().ensure_workspace()
+    records = None
+    if csv_path:
+        records = TikTokAdapter.ingest_manual(csv_path)
+        for r in records:
+            r.platform = platform
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        result = Pipeline(session).run_all(
+            proj, keyword, platform, publish_to=list(publish) or None,
+            duration=duration, limit=limit, records=records,
+            bgm=bgm, dry_run=not live, account_ids=list(account) or None,
+        )
+        console.print_json(json.dumps(result.summary(), ensure_ascii=False, default=str))
+        # Repeated outside the JSON on purpose: "published" with a warning is
+        # the one outcome a reader skims past, and it is the one that means
+        # the video is live somewhere nobody can see it.
+        for publication in result.publications:
+            if publication.warning:
+                console.print(
+                    f"\n[yellow]{publication.platform.value} は投稿できましたが、"
+                    f"公開範囲が要求と異なります[/yellow]"
+                )
+                for line in publication.warning.split("\n"):
+                    console.print(f"  [yellow]{line}[/yellow]")
+
+
+@create_app.command("script")
+def create_script(
+    project: str,
+    keyword: str,
+    platform: Platform = typer.Option(Platform.YOUTUBE, "--platform", "-p"),
+    duration: float = typer.Option(30.0, "--duration", "-d"),
+    run_id: int = typer.Option(None, "--run", help="この調査結果をもとに台本を書く"),
+):
+    """台本を書く。"""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        run = session.get(ResearchRun, run_id) if run_id else None
+        script = Pipeline(session).write_script(proj, keyword, platform, duration, run)
+        console.print(f"[green]台本 {script.id}[/green]: {script.title}")
+        table = Table(header_style="bold")
+        table.add_column("#", justify="right")
+        table.add_column("時間")
+        table.add_column("テロップ")
+        table.add_column("ナレーション", max_width=46)
+        for line in script.lines:
+            table.add_row(str(line["index"]), f"{line['start']:.1f}-{line['end']:.1f}",
+                          line.get("telop", ""), line.get("narration", ""))
+        console.print(table)
+
+
+@create_app.command("video")
+def create_video(
+    script_id: int,
+    bgm: Path = typer.Option(None, "--bgm"),
+    style: str = typer.Option(None, "--style", help="映像スタイルの指示"),
+    ken_burns: bool = typer.Option(True, "--ken-burns/--static"),
+    visual_mode: str = typer.Option(
+        None, "--visual", help="映像モード: still | animate | footage | auto"
+    ),
+    narrate: bool = typer.Option(False, "--narrate", help="ナレーションを合成する"),
+):
+    """絵コンテ・素材・書き出しまで一括で行う（ワンタッチ編集）。"""
+    init_db()
+    get_settings().ensure_workspace()
+    with session_scope() as session:
+        script = session.get(Script, script_id)
+        if script is None:
+            raise typer.BadParameter(f"台本ID {script_id} が見つかりません")
+        pipeline = Pipeline(session)
+        board = pipeline.draw_storyboard(script, style_hint=style)
+        console.print(f"絵コンテ {board.id}: {len(board.shots)}カット")
+
+        voice_path = None
+        if narrate:
+            track = pipeline.narrate(board)
+            voice_path = track.path
+            console.print(
+                f"ナレーション: {'音声を合成しました' if track.synthesized else '尺の推定のみ（音声なし）'}"
+                f" ({track.total_duration:.1f}s)"
+            )
+
+        visuals = pipeline.generate_visuals(board, visual_mode)
+        console.print(f"素材: {visuals.counts}")
+        for degraded in visuals.degraded:
+            console.print(
+                f"  [yellow]カット {degraded.shot_index}[/yellow] は次の方法に切り替えました: "
+                f"{degraded.mode.value}: {degraded.note}"
+            )
+
+        render = pipeline.render_video(
+            board, bgm=bgm, voice=voice_path, ken_burns=ken_burns,
+            visual_summary=visuals.summary(),
+        )
+        console.print(
+            f"[green]書き出しました:[/green] {render.path} "
+            f"（{render.duration_sec:.1f}秒 / {render.width}x{render.height} / "
+            f"テロップ {render.meta.get('telop_cues')}箇所）"
+        )
+
+
+# ---------------- metrics ----------------
+
+@metrics_app.command("collect")
+def metrics_collect(project: str = typer.Option(None, "--project", "-p")):
+    """各媒体の実績を取得してスナップショットを追加する。"""
+    init_db()
+    with session_scope() as session:
+        project_id = _get_project(session, project).id if project else None
+        snapshots = Pipeline(session).metrics.collect_all(project_id)
+        console.print(f"[green]実績を{len(snapshots)}件取得しました[/green]")
+
+
+# ---------------- pdca ----------------
+
+@pdca_app.command("plan")
+def pdca_plan(
+    project: str,
+    title: str,
+    hypothesis: str = typer.Option(..., "--hypothesis", "-h"),
+    metric: str = typer.Option("engagement_rate", "--metric"),
+    target: float = typer.Option(..., "--target"),
+    action: list[str] = typer.Option([], "--action", "-a"),
+):
+    """PDCAサイクルを開始する（Plan）。"""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        cycle = Pipeline(session).pdca.plan(
+            proj, title, hypothesis, {"metric": metric, "target": target}, list(action)
+        )
+        console.print(f"[green]PDCAサイクル {cycle.id} を作成しました[/green]（ベースライン={cycle.target.get('baseline')}）")
+
+
+@pdca_app.command("attach")
+def pdca_attach(cycle_id: int, publication_ids: list[int]):
+    """サイクルに投稿を紐づける（Do）。"""
+    init_db()
+    with session_scope() as session:
+        cycle = session.get(PdcaCycle, cycle_id)
+        Pipeline(session).pdca.do(cycle, list(publication_ids))
+        console.print(f"サイクル {cycle.id}: 投稿を{len(cycle.publication_ids)}件紐づけました")
+
+
+@pdca_app.command("review")
+def pdca_review(cycle_id: int):
+    """結果を判定し、次のアクションを決める（Check + Act）。"""
+    init_db()
+    with session_scope() as session:
+        cycle = session.get(PdcaCycle, cycle_id)
+        if cycle is None:
+            raise typer.BadParameter(f"PDCAサイクルID {cycle_id} が見つかりません")
+        Pipeline(session).pdca.run_check_act(cycle)
+        console.print(f"[bold]{cycle.title}[/bold] -> [green]{cycle.verdict}[/green]")
+        console.print(cycle.learnings or "")
+        for action in cycle.next_actions or []:
+            # Escape the bracket: rich would read "[high]" as a style tag and
+            # silently drop the priority.
+            priority = action.get("priority", "")
+            console.print(rf"  - \[{priority}] {action.get('action')}")
+
+
+# ---------------- reports ----------------
+
+@report_app.command("research")
+def report_research(run_id: int, no_pdf: bool = typer.Option(False, "--no-pdf")):
+    """調査レポートを出力する。"""
+    init_db()
+    with session_scope() as session:
+        run = session.get(ResearchRun, run_id)
+        if run is None:
+            raise typer.BadParameter(f"調査ID {run_id} が見つかりません")
+        report = Pipeline(session).reports.research_report(run, pdf=not no_pdf)
+        _print_report(report)
+
+
+@report_app.command("performance")
+def report_performance(project: str, no_pdf: bool = typer.Option(False, "--no-pdf")):
+    """実績レポートを出力する。"""
+    init_db()
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        report = Pipeline(session).reports.performance_report(proj, pdf=not no_pdf)
+        _print_report(report)
+
+
+@report_app.command("pdca")
+def report_pdca(cycle_id: int, no_pdf: bool = typer.Option(False, "--no-pdf")):
+    """PDCAレポートを出力する。"""
+    init_db()
+    with session_scope() as session:
+        cycle = session.get(PdcaCycle, cycle_id)
+        if cycle is None:
+            raise typer.BadParameter(f"PDCAサイクルID {cycle_id} が見つかりません")
+        report = Pipeline(session).reports.pdca_report(cycle, pdf=not no_pdf)
+        _print_report(report)
+
+
+def _print_report(report):
+    console.print(f"[green]HTML:[/green] {report.html_path}")
+    if report.pdf_path:
+        console.print(f"[green]PDF :[/green] {report.pdf_path}")
+    elif (report.context or {}).get("pdf_error"):
+        console.print(f"[yellow]PDF出力をスキップしました:[/yellow] {report.context['pdf_error']}")
+
+
+# ---------------- templates ----------------
+
+@template_app.command("list")
+def template_list():
+    """レポートのテンプレート一覧と、上書きの有無を表示する。"""
+    table = Table(header_style="bold")
+    table.add_column("テンプレート")
+    table.add_column("取り出し元")
+    for row in list_templates():
+        table.add_row(row["name"], "[green]user override[/green]" if row["overridden"] else "built-in")
+    console.print(table)
+    console.print(f"[dim]ユーザーテンプレート: {TemplateRegistry().user_dir}[/dim]")
+
+
+@template_app.command("eject")
+def template_eject(name: str):
+    """組み込みテンプレートを取り出して、デザインを差し替えられるようにする。"""
+    dest = TemplateRegistry().eject(name)
+    console.print(f"[green]テンプレートを取り出しました:[/green] {name} → {dest}")
+
+
+
+# ---------------- footage ----------------
+
+@footage_app.command("index")
+def footage_index(
+    directory: Path = typer.Argument(None, help="省略時は SNSAUTO_FOOTAGE_DIR"),
+):
+    """実写素材のフォルダを索引化し、カットに割り当てられるようにする。"""
+    init_db()
+    from .creative.footage import FootageLibrary
+
+    with session_scope() as session:
+        assets = FootageLibrary(session).index(directory)
+        console.print(f"[green]素材を{len(assets)}件索引しました[/green]")
+        table = Table(header_style="bold")
+        table.add_column("ファイル")
+        table.add_column("尺", justify="right")
+        table.add_column("サイズ")
+        table.add_column("キーワード")
+        for asset in assets[:25]:
+            table.add_row(
+                Path(asset.path).name, f"{asset.duration_sec:.1f}s",
+                f"{asset.width}x{asset.height}", ", ".join(asset.keywords[:6]),
+            )
+        console.print(table)
+
+
+@footage_app.command("list")
+def footage_list():
+    """索引済みの素材ライブラリを表示する。"""
+    init_db()
+    from .models import ClipAsset
+
+    with session_scope() as session:
+        table = Table(header_style="bold")
+        table.add_column("id", justify="right")
+        table.add_column("ファイル")
+        table.add_column("尺", justify="right")
+        table.add_column("縦型")
+        table.add_column("キーワード")
+        for asset in session.query(ClipAsset).order_by(ClipAsset.id):
+            table.add_row(
+                str(asset.id), Path(asset.path).name, f"{asset.duration_sec:.1f}s",
+                "yes" if asset.is_vertical else "no", ", ".join(asset.keywords[:6]),
+            )
+        console.print(table)
+
+
+# ---------------- worker ----------------
+
+@worker_app.command("run")
+def worker_run(
+    interval: float = typer.Option(None, "--interval", help="実行間隔（秒）"),
+    once: bool = typer.Option(False, "--once", help="1回だけ実行して終了する"),
+):
+    """予約投稿の実行と実績収集を繰り返す（常駐）。"""
+    init_db()
+    import logging
+
+    from .db import get_engine
+    from .scheduling.worker import Worker
+    from sqlalchemy.orm import Session as SASession
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    settings = get_settings()
+    engine = get_engine()
+    worker = Worker(lambda: SASession(engine, expire_on_commit=False), settings)
+
+    # ワーカーは systemd や cron など、Web UI とは別の場所から起動される
+    # ことが多い。既定のDBは起動フォルダからの相対パスなので、そのままだと
+    # 別のDBを見て「予約が0件」のまま回り続け、予約投稿は永遠に出ない。
+    # 見ているDBを毎回ログに残し、空なら警告する。
+    from .db import database_label, session_scope
+    from .models import Project, Publication, PublicationStatus
+
+    with session_scope() as session:
+        projects = session.query(Project).count()
+        scheduled = session.query(Publication).filter_by(
+            status=PublicationStatus.SCHEDULED).count()
+    logging.getLogger("snsauto.worker").info(
+        "database: %s (projects=%d, scheduled=%d)",
+        database_label(), projects, scheduled,
+    )
+    if projects == 0:
+        err_console.print(
+            f"[yellow]このワーカーが見ているDBにはプロジェクトがありません: "
+            f"{database_label()}\nWeb UI と同じDBか確認してください。"
+            "別の場所から起動している場合は SNSAUTO_DB_URL を絶対パスで"
+            "指定してください。[/yellow]"
+        )
+
+    if once:
+        console.print_json(json.dumps(worker.tick(), default=str))
+        return
+    console.print(
+        f"[green]ワーカー[/green] {worker.identity} を開始しました"
+        f"（予約 {scheduled}件 / DB {database_label()}）"
+    )
+    worker.run(interval)
+
+
+@worker_app.command("jobs")
+def worker_jobs(limit: int = typer.Option(5, "--limit")):
+    """Web UI から積まれたジョブを処理する（プロセス管理下で運用する場合）。"""
+    init_db()
+    from .db import get_engine
+    from .scheduling.jobs import JobRunner
+    from sqlalchemy.orm import Session as SASession
+
+    engine = get_engine()
+    runner = JobRunner(lambda: SASession(engine, expire_on_commit=False), get_settings())
+    console.print_json(json.dumps(runner.run_queued(limit), default=str))
+
+
+# ---------------- A/B ----------------
+
+@ab_app.command("create")
+def ab_create(
+    project: str,
+    script_id: int,
+    dimension: str = typer.Option("hook", "--dimension", "-d"),
+    arms: int = typer.Option(2, "--arms", "-n"),
+    name: str = typer.Option(None, "--name"),
+):
+    """台本をもとにA/Bテストを作成する。"""
+    init_db()
+    from .experiments import DIMENSIONS, ExperimentService
+    from .llm import build_client
+
+    if dimension not in DIMENSIONS:
+        raise typer.BadParameter(f"次のいずれかを指定してください: {sorted(DIMENSIONS)}")
+
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        base = session.get(Script, script_id)
+        if base is None:
+            raise typer.BadParameter(f"台本ID {script_id} が見つかりません")
+        experiment = ExperimentService(session, build_client()).create(
+            proj, name or f"{base.title} A/B", base, dimension, arms
+        )
+        console.print(f"[green]A/Bテスト {experiment.id} を作成しました[/green]: {experiment.name}")
+        table = Table(header_style="bold")
+        table.add_column("群")
+        table.add_column("台本", justify="right")
+        table.add_column("介入内容")
+        for variant in experiment.variants:
+            detail = ", ".join(
+                f"{k}={v}" for k, v in variant.treatment.items()
+                if k not in ("dimension", "control")
+            )
+            table.add_row(variant.label, str(variant.script_id), detail or "control")
+        console.print(table)
+
+
+@ab_app.command("attach")
+def ab_attach(experiment_id: int, label: str, publication_ids: list[int]):
+    """片方の群に投稿を紐づける。"""
+    init_db()
+    from .experiments import ExperimentService
+
+    with session_scope() as session:
+        experiment = session.get(Experiment, experiment_id)
+        if experiment is None:
+            raise typer.BadParameter(f"A/BテストID {experiment_id} が見つかりません")
+        variant = next(
+            (v for v in experiment.variants if v.label.upper() == label.upper()), None
+        )
+        if variant is None:
+            raise typer.BadParameter(f"群「{label}」が見つかりません")
+        ExperimentService(session).attach(variant, list(publication_ids))
+        console.print(f"群 {variant.label}: 投稿{len(variant.publication_ids)}件")
+
+
+@ab_app.command("review")
+def ab_review(experiment_id: int):
+    """両群を比較して勝者を判定する（判定できない場合はその理由を出す）。"""
+    init_db()
+    from .experiments import ExperimentService
+
+    with session_scope() as session:
+        experiment = session.get(Experiment, experiment_id)
+        if experiment is None:
+            raise typer.BadParameter(f"A/BテストID {experiment_id} が見つかりません")
+        service = ExperimentService(session)
+        service.evaluate(experiment)
+        conclusion = experiment.conclusion or {}
+        colour = "green" if conclusion.get("verdict") == "winner" else "yellow"
+        console.print(f"[{colour}]{conclusion.get('verdict')}[/{colour}] {conclusion.get('reason')}")
+        console.print(service.learnings(experiment))
+
+
+# ---------------- users ----------------
+
+@user_app.command("create")
+def user_create(
+    email: str,
+    password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+    name: str = typer.Option(None, "--name"),
+    role: str = typer.Option("editor", "--role", help="権限: admin | editor | viewer"),
+):
+    """Web UI のログインユーザーを作る。"""
+    init_db()
+    from .web.auth import AuthError, create_user
+
+    with session_scope() as session:
+        try:
+            user = create_user(session, email, password, name, role)
+        except AuthError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        console.print(f"[green]ユーザーを作成しました:[/green] {user.email}（{user.role}）")
+
+
+@user_app.command("password")
+def user_password(
+    email: str,
+    password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+):
+    """パスワードを設定し直す（移行で取り込んだ利用者は必須）。"""
+    init_db()
+    from .models import User
+    from .web.auth import AuthError, hash_password
+
+    with session_scope() as session:
+        user = session.query(User).filter_by(email=email.strip().lower()).one_or_none()
+        if user is None:
+            raise typer.BadParameter(f"{email} という利用者はいません")
+        try:
+            user.password_hash = hash_password(password)
+        except AuthError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        console.print(f"[green]パスワードを設定しました:[/green] {user.email}")
+
+
+@user_app.command("list")
+def user_list():
+    """Web UI のログインユーザー一覧。"""
+    init_db()
+    with session_scope() as session:
+        table = Table(header_style="bold")
+        table.add_column("id", justify="right")
+        table.add_column("メール")
+        table.add_column("権限")
+        table.add_column("有効")
+        table.add_column("最終ログイン")
+        for user in session.query(User).order_by(User.id):
+            table.add_row(
+                str(user.id), user.email, user.role,
+                "yes" if user.is_active else "no",
+                user.last_login_at.strftime("%Y-%m-%d %H:%M") if user.last_login_at else "-",
+            )
+        console.print(table)
+
+
+@user_app.command("secret")
+def user_secret():
+    """SNSAUTO_SECRET_KEY 用の署名鍵を生成する。"""
+    import secrets
+
+    console.print(secrets.token_urlsafe(48))
+
+
+# ---------------- database ----------------
+
+# ---------------- edit ----------------
+
+
+def _print_trim_plan(plan, retakes):
+    table = Table(title="無音の候補と判定", header_style="bold", title_justify="left")
+    table.add_column("時刻", justify="right", width=13)
+    table.add_column("長さ", justify="right", width=6)
+    table.add_column("判定", width=4)
+    table.add_column("理由", overflow="fold")
+    for gap in plan.gaps:
+        mark = "[green]切[/green]" if gap.decision == "cut" else "[yellow]残[/yellow]"
+        table.add_row(f"{gap.start:.2f}-{gap.end:.2f}", f"{gap.duration:.2f}s",
+                      mark, gap.reason)
+    console.print(table)
+    console.print(
+        f"\n{plan.duration:.2f}秒 → [bold]{plan.result_sec:.2f}秒[/bold]"
+        f"（{plan.removed_sec:.2f}秒を削除、{len(plan.cuts)}箇所）"
+    )
+    if retakes:
+        console.print(
+            f"\n[yellow]言い直しの候補が{len(retakes)}件あります[/yellow]"
+            "[dim]（自動ではカットしません。文字起こしが無いと確定できないためです）[/dim]"
+        )
+        for candidate in retakes:
+            console.print(f"  {candidate.start:6.2f}s  {candidate.reason}")
+
+
+@edit_app.command("trim")
+def edit_trim(
+    source: Path = typer.Argument(..., help="撮影した素材の動画ファイル"),
+    out: Path = typer.Option(None, "--out", help="書き出し先（省略すると計画の表示のみ）"),
+    min_gap: float = typer.Option(
+        None, "--min-gap", help="この秒数以上の間だけを対象にする（既定 0.3）"
+    ),
+    handle: float = typer.Option(
+        None, "--handle", help="発話の前後に残す余白の秒数（既定 0.1）"
+    ),
+    trim_ends: bool = typer.Option(
+        False, "--trim-ends", help="素材の先頭と末尾の無音も詰める"
+    ),
+):
+    """無音をカットして詰める。どこを切るかを先に表示する。
+
+    単語の途中では切りません。0.3秒未満の間（促音や子音）と、無声子音の
+    エネルギーが残っている間は残し、切る場合も発話の前後に0.1秒の余白を
+    残します。
+    """
+    from .media.trim import HANDLE_SEC, MIN_GAP_SEC, apply_trim, plan_trim, retake_candidates
+
+    if not source.exists():
+        raise typer.BadParameter(f"素材が見つかりません: {source}")
+
+    plan = plan_trim(
+        source,
+        min_gap=min_gap if min_gap is not None else MIN_GAP_SEC,
+        handle=handle if handle is not None else HANDLE_SEC,
+        keep_head_tail=not trim_ends,
+    )
+    _print_trim_plan(plan, retake_candidates(plan))
+
+    if out is None:
+        console.print("\n[dim]--out を付けると、この計画どおりに書き出します。[/dim]")
+        return
+    if not plan.cuts:
+        console.print("\n[yellow]切る箇所がないため、そのまま複製します。[/yellow]")
+    written = apply_trim(plan, out)
+    console.print(f"[green]書き出しました:[/green] {written}")
+
+
+@edit_app.command("notation")
+def edit_notation(
+    project: str = typer.Argument(..., help="表記辞書を持つプロジェクト"),
+    text: str = typer.Argument(None, help="変換を試すテキスト"),
+    add: list[str] = typer.Option(
+        [], "--add", help="追加する組。「アストラ=Astra」の形（複数指定可）"
+    ),
+    remove: list[str] = typer.Option([], "--remove", help="削除する入力語（複数指定可）"),
+    except_: list[str] = typer.Option(
+        [], "--except", help="置き換えない語を追加（複数指定可）"
+    ),
+):
+    """表記ゆれの辞書を表示・編集し、変換を試す。
+
+    辞書はブランド設定に保存され、Web UI のブランド設定画面と共有されます。
+    """
+    init_db()
+    from .creative.notation import (
+        EXCEPTION_KEY, NOTATION_KEY, NotationRules, parse_mapping,
+    )
+
+    with session_scope() as session:
+        proj = _get_project(session, project)
+        profile = dict(proj.brand_profile or {})
+
+        if add or remove or except_:
+            additions, errors = parse_mapping("\n".join(add))
+            if errors:
+                raise typer.BadParameter(" / ".join(errors))
+            mapping = dict(profile.get(NOTATION_KEY) or {})
+            missing = [word for word in remove if word not in mapping]
+            if missing:
+                raise typer.BadParameter(
+                    f"辞書に無い語は削除できません: {', '.join(missing)}"
+                )
+            for word in remove:
+                mapping.pop(word)
+            mapping.update(additions)
+            exceptions = list(profile.get(EXCEPTION_KEY) or [])
+            exceptions += [w for w in except_ if w not in exceptions]
+
+            for key, value in ((NOTATION_KEY, mapping), (EXCEPTION_KEY, exceptions)):
+                if value:
+                    profile[key] = value
+                else:
+                    profile.pop(key, None)
+            proj.brand_profile = profile
+            console.print("[green]表記辞書を更新しました[/green]")
+
+        rules = NotationRules(profile.get(NOTATION_KEY), profile.get(EXCEPTION_KEY))
+
+    if not rules:
+        console.print(
+            "[yellow]このプロジェクトに表記指定がありません。[/yellow]\n"
+            "[dim]`--add アストラ=Astra` で追加するか、Web UI のブランド設定から"
+            "入れてください。[/dim]"
+        )
+        return
+
+    table = Table(title="表記指定", header_style="bold", title_justify="left")
+    table.add_column("入力")
+    table.add_column("出力")
+    for source, target in sorted(rules.mapping.items()):
+        table.add_row(source, target)
+    console.print(table)
+    if rules.exceptions:
+        console.print(f"[dim]置き換えない語: {'、'.join(rules.exceptions)}[/dim]")
+
+    if text:
+        result = rules.apply(text)
+        console.print(f"\n{result.text}")
+        console.print(f"[dim]{result.summary_ja()}[/dim]")
+
+# ---------------- migrate ----------------
+
+
+@migrate_app.command("export")
+def migrate_export(
+    out: Path = typer.Option(None, "--out", help="書き出し先の zip（省略時は作業フォルダ）"),
+    project: str = typer.Option(None, "--project", help="このプロジェクトだけを書き出す"),
+    with_media: bool = typer.Option(
+        False, "--with-media", help="動画・絵コンテ画像・レポートも同梱する（大きくなります）"
+    ),
+):
+    """移行ファイル（zip）を書き出す。認証情報は入れません。"""
+    init_db()
+    from datetime import datetime
+
+    from .migration import export_bundle
+
+    settings = get_settings()
+    with session_scope() as session:
+        project_id = _get_project(session, project).id if project else None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        suffix = f"-{project}" if project else ""
+        destination = out or (settings.workspace / f"snsauto-migration{suffix}-{stamp}.zip")
+        written, manifest = export_bundle(
+            session, destination, project_id=project_id, with_media=with_media,
+            settings=settings,
+        )
+
+    total = sum(manifest.tables.values())
+    console.print(f"[green]移行ファイルを書き出しました:[/green] {written}")
+    console.print(f"  範囲: {manifest.scope} / {total}行 / "
+                  f"{written.stat().st_size / 1024:.0f} KB")
+    if manifest.media:
+        console.print(f"  動画・画像: {len(manifest.media)}件を同梱")
+    console.print("  [dim]入れていないもの:[/dim]")
+    for item in manifest.excluded:
+        console.print(f"    [dim]- {item}[/dim]")
+    for key, count in manifest.detached.items():
+        console.print(f"  [yellow]{key}: 範囲外を指していた {count}件を空にしました[/yellow]")
+    console.print("  [dim]中身と使い方は zip の README.md にあります。[/dim]")
+
+
+@migrate_app.command("inspect")
+def migrate_inspect(path: Path = typer.Argument(..., help="移行ファイル（zip）")):
+    """移行ファイルの中身を確認する。取り込みはしません。"""
+    from .migration import read_manifest
+
+    manifest = read_manifest(path)
+    console.print(f"[bold]{path.name}[/bold]")
+    console.print(f"  書き出し日時: {manifest.exported_at}")
+    console.print(f"  範囲: {manifest.scope}")
+    console.print(f"  スキーマの版: {manifest.schema_revision or '不明'}")
+    table = Table(header_style="bold")
+    table.add_column("テーブル")
+    table.add_column("件数", justify="right")
+    for name, count in manifest.tables.items():
+        if count:
+            table.add_row(name, str(count))
+    console.print(table)
+    console.print(f"  動画・画像: {len(manifest.media)}件")
+    for item in manifest.excluded:
+        console.print(f"  [dim]入れていないもの: {item}[/dim]")
+
+
+@migrate_app.command("import")
+def migrate_import(path: Path = typer.Argument(..., help="移行ファイル（zip）")):
+    """移行ファイルを取り込む。空のDBにだけ取り込めます。"""
+    init_db()
+    from .migration import import_bundle
+
+    with session_scope() as session:
+        result = import_bundle(session, path, get_settings())
+
+    console.print(f"[green]取り込みました:[/green] {sum(result.tables.values())}行")
+    if result.media_copied:
+        console.print(f"  動画・画像: {result.media_copied}件を作業フォルダに配置")
+    if result.missing_files:
+        console.print(
+            f"  [yellow]場所だけが記録されていて実物の無いファイルが {result.missing_files}件"
+            "あります（--with-media なしで書き出した場合）。[/yellow]"
+        )
+    if result.accounts_to_reconnect:
+        console.print(
+            f"  [yellow]連携アカウント {result.accounts_to_reconnect}件は再連携が必要です。"
+            "Web UI の /accounts から連携し直してください。[/yellow]"
+        )
+    for email in result.users_to_reset:
+        console.print(
+            f"  [yellow]{email} のパスワードを再設定してください:[/yellow] "
+            f"snsauto user password {email}"
+        )
+
+
+# ---------------- setup ----------------
+
+_STATE_MARK = {"done": "[green]済[/green]", "todo": "[red]未[/red]",
+               "unknown": "[yellow]?[/yellow]"}
+
+
+def _rich(text: str) -> str:
+    """Markdown emphasis, as the terminal renders it.
+
+    The gate descriptions are written once and shown in two places: here, and
+    in the markdown that `review-pack` writes. `**` is correct in the file and
+    noise on screen.
+    """
+    import re
+
+    return re.sub(r"\*\*(.+?)\*\*", r"[bold]\1[/bold]", text, flags=re.S)
+
+
+@setup_app.command("connect")
+def setup_connect(
+    platform: Platform = typer.Argument(..., help="接続するプラットフォーム"),
+):
+    """接続までに必要なことを、依存順に表示する。
+
+    ローカルで確認できるものは確認し、確認できないものは「?」として
+    確認方法を示します。推測で「済」とは出しません。
+    """
+    init_db()
+    from .onboarding import connect_plan
+
+    settings = get_settings()
+    with session_scope() as session:
+        steps, gates = connect_plan(platform, settings, session)
+
+    table = Table(title=f"{platform.value.upper()} 接続手順", header_style="bold",
+                  title_justify="left")
+    table.add_column("", width=3)
+    table.add_column("項目", max_width=26, overflow="fold")
+    # Folded, never truncated: the elided half of "この権限が無いと保存数が
+    # 取れません" is the half the operator needs.
+    table.add_column("状況", overflow="fold")
+    for step in steps:
+        table.add_row(_STATE_MARK[step.state], step.label,
+                      step.detail + (f"\n[dim]{step.action}[/dim]" if step.action else ""))
+    console.print(table)
+
+    pending = [s for s in steps if s.state == "todo"]
+    if pending:
+        console.print(f"\n[bold]次にやること[/bold]\n  {pending[0].label} — {pending[0].action}")
+
+    if gates:
+        console.print("\n[bold]接続した後に控えている審査[/bold]")
+        for gate in gates:
+            console.print(f"\n  [yellow]{gate.name}[/yellow]（目安 {gate.typical_wait}）")
+            console.print(f"    対象    : {gate.applies_to}")
+            console.print(f"    止まる  : {_rich(gate.blocks)}")
+            console.print(f"    必要    : {gate.cost}")
+            console.print(f"    [dim]{gate.source}[/dim]")
+
+
+@setup_app.command("review-pack")
+def setup_review_pack(
+    platform: Platform = typer.Argument(..., help="申請するプラットフォーム"),
+    out: Path = typer.Option(None, "--out", help="書き出し先（既定はワークスペース）"),
+):
+    """アプリ審査の申請文と操作録画の手順を書き出す。
+
+    このツールが実際に呼んでいるエンドポイントから起こしているので、
+    申請内容と実装の食い違い（差し戻しの最大の原因）が起きません。
+    """
+    from .onboarding import review_pack
+
+    settings = get_settings()
+    settings.ensure_workspace()
+    try:
+        body = review_pack(platform, settings)
+    except ValueError as exc:
+        # A platform we have not written a pack for is a known limit, not a
+        # crash, and must not be reported as "予期しないエラー".
+        raise typer.BadParameter(str(exc)) from exc
+    destination = out or (settings.workspace / f"{platform.value}-review-pack.md")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(body, encoding="utf-8")
+    console.print(f"[green]申請パックを書き出しました:[/green] {destination}")
+    console.print("[dim]申請フォームに貼り付ける英文と、録画すべき操作の手順が入っています。[/dim]")
+
+
+@setup_app.command("gates")
+def setup_gates():
+    """各プラットフォームの審査と、通るまで何が止まるかを一覧する。"""
+    from .onboarding import LAUNCH_GATES
+
+    for platform, gates in LAUNCH_GATES.items():
+        console.print(f"\n[bold]{platform.value.upper()}[/bold]")
+        for gate in gates:
+            console.print(f"  [yellow]{gate.name}[/yellow]（{gate.typical_wait}）")
+            console.print(f"    {_rich(gate.blocks)}")
+            console.print(f"    [dim]{gate.source}[/dim]")
+
+
+db_app = typer.Typer(help="Schema migrations.", no_args_is_help=True)
+app.add_typer(db_app, name="db")
+
+
+@db_app.command("upgrade")
+def db_upgrade(revision: str = typer.Argument("head")):
+    """データベースのマイグレーションを適用する。"""
+    from alembic import command
+
+    from .db import _alembic_config
+
+    command.upgrade(_alembic_config(), revision)
+    console.print(f"[green]{revision} まで適用しました[/green]")
+
+
+@db_app.command("current")
+def db_current():
+    """適用済みのリビジョンを表示する。"""
+    from alembic import command
+
+    from .db import _alembic_config
+
+    command.current(_alembic_config(), verbose=True)
+
+
+@db_app.command("revision")
+def db_revision(message: str = typer.Option(..., "--message", "-m")):
+    """モデルの変更からマイグレーションを自動生成する。"""
+    from alembic import command
+
+    from .db import _alembic_config
+
+    command.revision(_alembic_config(), message=message, autogenerate=True)
+
+
+# ---------------- connected accounts ----------------
+
+account_app = typer.Typer(help="Connected SNS accounts.", no_args_is_help=True)
+app.add_typer(account_app, name="account")
+
+
+@account_app.command("list")
+def account_list():
+    """連携済みアカウントと、トークンの残り期間を表示する。"""
+    init_db()
+    from .models import SocialAccount
+    from .platforms.accounts import AccountService
+
+    with session_scope() as session:
+        service = AccountService(session)
+        table = Table(header_style="bold")
+        table.add_column("id", justify="right")
+        table.add_column("媒体")
+        table.add_column("アカウント")
+        table.add_column("期限")
+        table.add_column("24h投稿数", justify="right")
+        table.add_column("状態")
+
+        accounts = session.query(SocialAccount).order_by(SocialAccount.id).all()
+        if not accounts:
+            console.print("[yellow]連携済みのアカウントがありません。[/yellow] "
+                          "Connect them from the web UI: /accounts")
+            return
+        for account in accounts:
+            remaining = account.seconds_until_expiry()
+            expires = (
+                "no expiry" if remaining is None
+                else ("expired" if remaining <= 0 else f"{remaining / 3600:.1f}h")
+            )
+            state = (
+                "[red]refresh failed[/red]" if account.refresh_error
+                else ("[dim]disconnected[/dim]" if not account.is_active
+                      else "[green]connected[/green]")
+            )
+            table.add_row(
+                str(account.id), account.platform.value,
+                account.display_name or account.external_id, expires,
+                str(service.posts_in_window(account.platform, account.id)), state,
+            )
+        console.print(table)
+
+
+@account_app.command("connect-url")
+def account_connect_url(platform: Platform):
+    """ブラウザで開く連携用URLを表示する。
+
+    Web UI にまだ到達できない場合に使います。表示されたURLを開いて認可すると、
+    コールバックがこのインストールに戻ってきて連携が完了します。
+    """
+    from .platforms.oauth import OAuthError, get_provider
+
+    try:
+        start = get_provider(platform, get_settings()).start()
+    except OAuthError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(start.url)
+    console.print(f"[dim]state（照合用の文字列）: {start.state}[/dim]")
+
+
+@account_app.command("refresh")
+def account_refresh(account_id: int = typer.Argument(None, help="省略すると期限が近いもの全てを更新")):
+    """期限が近いアクセストークンを更新する。"""
+    init_db()
+    from .models import SocialAccount
+    from .platforms.accounts import AccountService
+    from .platforms.oauth import OAuthError
+
+    with session_scope() as session:
+        service = AccountService(session)
+        if account_id:
+            account = session.get(SocialAccount, account_id)
+            if account is None:
+                raise typer.BadParameter(f"アカウントID {account_id} が見つかりません")
+            try:
+                service.refresh(account)
+                console.print(f"[green]更新しました[/green]（有効期限 {account.expires_at}）")
+            except OAuthError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            return
+        results = service.refresh_due()
+        console.print_json(json.dumps(results, default=str))
+
+
+@account_app.command("limits")
+def account_limits():
+    """各媒体の投稿枠をどれだけ使ったかを表示する。"""
+    init_db()
+    from .platforms.accounts import AccountService
+
+    with session_scope() as session:
+        service = AccountService(session)
+        table = Table(header_style="bold")
+        table.add_column("媒体")
+        table.add_column("24h使用", justify="right")
+        table.add_column("上限", justify="right")
+        table.add_column("投稿可")
+        table.add_column("備考")
+        for platform in Platform:
+            rate = service.check_rate(platform)
+            table.add_row(
+                platform.value, str(rate["used_24h"]),
+                str(rate["cap"] or "-"),
+                "[green]yes[/green]" if rate["allowed"] else "[red]no[/red]",
+                rate["reason"] or "",
+            )
+        console.print(table)
+        console.print(
+            "[dim]Instagram は自身の残り枠を返します。"
+            "投稿時にアダプタが毎回問い合わせるため、別途の確認コマンドは不要です。[/dim]"
+        )
+
+
+def _warn_unknown_settings() -> None:
+    """読まれていない設定名を、正しい名前の候補つきで知らせる。
+
+    設定は extra="ignore" で読んでいるため、名前を打ち間違えると黙って
+    既定値が使われる。SNSAUTO_DB_URL なら別のDBに書かれ、トークンなら
+    「未設定」と表示されて原因が分からない。
+    """
+    from .config import unknown_settings
+
+    try:
+        found = unknown_settings()
+    except Exception:  # noqa: BLE001 - 警告の失敗で本体を止めない
+        return
+    for key, suggestion, origin in found:
+        hint = f" → 「{suggestion}」の間違いではありませんか" if suggestion else ""
+        err_console.print(
+            f"[yellow]設定名「{key}」は読まれていません（{origin}）{hint}[/yellow]"
+        )
+
+
+def _print_new_database_notice() -> None:
+    from .db import new_database_notice
+
+    notice = new_database_notice()
+    if notice:
+        err_console.print(f"\n[yellow]{notice}[/yellow]")
+
+
+def _run(invoke) -> None:
+    """Explains failures instead of printing a traceback.
+
+    `--debug` anywhere on the command line re-raises, so the full trace is
+    still one flag away when it is actually wanted.
+    """
+    import sys
+
+    from .errors import explain
+
+    debug = "--debug" in sys.argv
+    if debug:
+        sys.argv = [a for a in sys.argv if a != "--debug"]
+    _warn_unknown_settings()
+    try:
+        invoke()
+    except (typer.Exit, typer.Abort, SystemExit, click.exceptions.ClickException):
+        # 空の一覧のすぐ下に出す。「プロジェクトが無い」と思った利用者が
+        # 見ているのがそこなので。
+        _print_new_database_notice()
+        raise
+    except BaseException as exc:  # noqa: BLE001 - this is the boundary
+        _print_new_database_notice()
+        if debug:
+            raise
+        explained = explain(exc)
+        if isinstance(exc, KeyboardInterrupt):
+            console.print("\n[dim]中断しました。[/dim]")
+            raise SystemExit(130) from None
+        console.print(f"\n[red]{explained.title}[/red]")
+        if explained.detail:
+            console.print(f"  {explained.detail}")
+        if explained.fix:
+            for line in explained.fix.split("\n"):
+                console.print(f"  [yellow]{line}[/yellow]" if line.strip() else "")
+        raise SystemExit(1) from None
+    _print_new_database_notice()
+
+
+def main() -> None:
+    """Entry point. ``app()`` does the same thing; see ``_SnsApp``."""
+    app()
+
+if __name__ == "__main__":
+    main()
