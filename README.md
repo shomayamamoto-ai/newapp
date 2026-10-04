@@ -1161,6 +1161,60 @@ CSS変数（`--brand`, `--ink`, `--font`）とJinjaコンテキスト（`brand_c
 
 ---
 
+## 移行（別のツール・別のサーバーへ）
+
+データを1つの zip にまとめて持ち出せます。移行先がこのツールでなくても使えるよう、
+同じデータを複数の形で入れてあります。
+
+```bash
+snsauto migrate export                                # 全体
+snsauto migrate export --project showstagram.keio     # 1社分だけ
+snsauto migrate export --with-media                   # 動画・絵コンテ画像・レポートも同梱
+snsauto migrate inspect 移行ファイル.zip               # 中身の確認（取り込まない）
+snsauto migrate import  移行ファイル.zip               # 別の snsauto に取り込む
+```
+
+| 移行先 | 使うファイル |
+|---|---|
+| 別のサーバーの snsauto | zip のまま `snsauto migrate import` |
+| PostgreSQL / MySQL の別システム | `schema/postgresql.sql` か `schema/mysql.sql` と `data/*.json` |
+| Excel / Googleスプレッドシート / Notion / Airtable | `csv/*.csv`（BOM付き UTF-8。Excel でも文字化けしません） |
+| 自作のツール・ノーコードツール | `data/*.json` と、項目の型を書いた `schema/rows.schema.json` |
+| 判定の基準だけを移す | `rules.json`（無音カット・統計・出荷前チェックなどの基準値と意味） |
+
+### 認証情報は入れません
+
+SNS のトークンは発行した OAuth アプリに紐づいていて、別のツールでは使えません。
+使えないものを持ち出すと漏えいの危険だけが残るので、入れていません。除外は3段です。
+
+1. トークンとパスワードハッシュの列を落とす
+2. JSON の中を再帰的にたどり、鍵名が token / secret / password などのものを落とす。
+   Instagram の連携は長期有効のユーザートークンを `meta.user_token` に持っていて、
+   列だけ落とすとここから漏れます
+3. 書き出した全ファイルを、DBと設定にある**実際の秘密の値**と照合する。エラー文や
+   ジョブの記録に URL ごと紛れ込んだトークンもこれで見つかり、1つでも残っていれば
+   移行ファイルを消して中止します
+
+移行先では、アカウントを連携し直し、パスワードを `snsauto user password <メール>`
+で設定し直してください。
+
+### 1社分だけを書き出すとき
+
+外部キーをたどって範囲を自動で決めます。他の顧客のデータ、複数の顧客で共有している
+アカウント、スタッフのアカウント、共有の素材ライブラリは含めません。共有アカウントで
+投稿した記録のように範囲外を指している参照は空にし、件数を README に残します。
+
+### 取り込みの制約
+
+- **空のDBにだけ取り込めます。** IDが重なって別の顧客のデータにつながるのを防ぐため
+- **書き出し元と取り込み先は、同じ版の snsauto にそろえてください。** 列の違いで
+  項目が黙って欠けるのを防ぐため、版が違えば取り込みません
+- PostgreSQL に取り込んだ場合は連番を自動で合わせます（合わせないと、取り込み後に
+  最初に作る行が ID の重複で失敗します）。この処理は実際の PostgreSQL ではまだ
+  検証していません
+
+---
+
 ## 配備
 
 常時稼働サーバー向けに Docker Compose と systemd の両方を用意しています。

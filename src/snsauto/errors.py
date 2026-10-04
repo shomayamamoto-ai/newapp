@@ -68,6 +68,12 @@ def explain(exc: BaseException) -> Explained:
         return Explained("接続情報がありません", message,
                          "`snsauto doctor` で不足しているものを確認できます。")
 
+    if name == "MigrationError":
+        return Explained(
+            "移行ファイルを扱えません", message,
+            "`snsauto migrate inspect <zip>` で中身を確認できます。",
+        )
+
     if name == "DatabaseLocationError":
         return Explained(
             "データベースを置けません", message,

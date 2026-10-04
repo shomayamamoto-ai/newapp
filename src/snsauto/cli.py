@@ -59,6 +59,7 @@ workspace_app = typer.Typer(help="ワークスペースの容量確認と手動�
 watch_app = typer.Typer(help="競合アカウントの定点ウォッチと差分。", no_args_is_help=True)
 setup_app = typer.Typer(help="接続までの手順と、アプリ審査の申請資料。", no_args_is_help=True)
 edit_app = typer.Typer(help="撮影した素材の無音カットと言い直しの確認。", no_args_is_help=True)
+migrate_app = typer.Typer(help="移行ファイルの書き出しと取り込み（別のツール・別のサーバーへ）。", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(research_app, name="research")
@@ -75,6 +76,7 @@ app.add_typer(user_app, name="user")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(setup_app, name="setup")
 app.add_typer(edit_app, name="edit")
+app.add_typer(migrate_app, name="migrate")
 
 console = Console()
 # 警告は stderr に出す。JSON出力をパイプしている利用者の結果を汚さないため。
@@ -1127,6 +1129,27 @@ def user_create(
         console.print(f"[green]ユーザーを作成しました:[/green] {user.email}（{user.role}）")
 
 
+@user_app.command("password")
+def user_password(
+    email: str,
+    password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+):
+    """パスワードを設定し直す（移行で取り込んだ利用者は必須）。"""
+    init_db()
+    from .models import User
+    from .web.auth import AuthError, hash_password
+
+    with session_scope() as session:
+        user = session.query(User).filter_by(email=email.strip().lower()).one_or_none()
+        if user is None:
+            raise typer.BadParameter(f"{email} という利用者はいません")
+        try:
+            user.password_hash = hash_password(password)
+        except AuthError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        console.print(f"[green]パスワードを設定しました:[/green] {user.email}")
+
+
 @user_app.command("list")
 def user_list():
     """Web UI のログインユーザー一覧。"""
@@ -1298,6 +1321,99 @@ def edit_notation(
         result = rules.apply(text)
         console.print(f"\n{result.text}")
         console.print(f"[dim]{result.summary_ja()}[/dim]")
+
+# ---------------- migrate ----------------
+
+
+@migrate_app.command("export")
+def migrate_export(
+    out: Path = typer.Option(None, "--out", help="書き出し先の zip（省略時は作業フォルダ）"),
+    project: str = typer.Option(None, "--project", help="このプロジェクトだけを書き出す"),
+    with_media: bool = typer.Option(
+        False, "--with-media", help="動画・絵コンテ画像・レポートも同梱する（大きくなります）"
+    ),
+):
+    """移行ファイル（zip）を書き出す。認証情報は入れません。"""
+    init_db()
+    from datetime import datetime
+
+    from .migration import export_bundle
+
+    settings = get_settings()
+    with session_scope() as session:
+        project_id = _get_project(session, project).id if project else None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        suffix = f"-{project}" if project else ""
+        destination = out or (settings.workspace / f"snsauto-migration{suffix}-{stamp}.zip")
+        written, manifest = export_bundle(
+            session, destination, project_id=project_id, with_media=with_media,
+            settings=settings,
+        )
+
+    total = sum(manifest.tables.values())
+    console.print(f"[green]移行ファイルを書き出しました:[/green] {written}")
+    console.print(f"  範囲: {manifest.scope} / {total}行 / "
+                  f"{written.stat().st_size / 1024:.0f} KB")
+    if manifest.media:
+        console.print(f"  動画・画像: {len(manifest.media)}件を同梱")
+    console.print("  [dim]入れていないもの:[/dim]")
+    for item in manifest.excluded:
+        console.print(f"    [dim]- {item}[/dim]")
+    for key, count in manifest.detached.items():
+        console.print(f"  [yellow]{key}: 範囲外を指していた {count}件を空にしました[/yellow]")
+    console.print("  [dim]中身と使い方は zip の README.md にあります。[/dim]")
+
+
+@migrate_app.command("inspect")
+def migrate_inspect(path: Path = typer.Argument(..., help="移行ファイル（zip）")):
+    """移行ファイルの中身を確認する。取り込みはしません。"""
+    from .migration import read_manifest
+
+    manifest = read_manifest(path)
+    console.print(f"[bold]{path.name}[/bold]")
+    console.print(f"  書き出し日時: {manifest.exported_at}")
+    console.print(f"  範囲: {manifest.scope}")
+    console.print(f"  スキーマの版: {manifest.schema_revision or '不明'}")
+    table = Table(header_style="bold")
+    table.add_column("テーブル")
+    table.add_column("件数", justify="right")
+    for name, count in manifest.tables.items():
+        if count:
+            table.add_row(name, str(count))
+    console.print(table)
+    console.print(f"  動画・画像: {len(manifest.media)}件")
+    for item in manifest.excluded:
+        console.print(f"  [dim]入れていないもの: {item}[/dim]")
+
+
+@migrate_app.command("import")
+def migrate_import(path: Path = typer.Argument(..., help="移行ファイル（zip）")):
+    """移行ファイルを取り込む。空のDBにだけ取り込めます。"""
+    init_db()
+    from .migration import import_bundle
+
+    with session_scope() as session:
+        result = import_bundle(session, path, get_settings())
+
+    console.print(f"[green]取り込みました:[/green] {sum(result.tables.values())}行")
+    if result.media_copied:
+        console.print(f"  動画・画像: {result.media_copied}件を作業フォルダに配置")
+    if result.missing_files:
+        console.print(
+            f"  [yellow]場所だけが記録されていて実物の無いファイルが {result.missing_files}件"
+            "あります（--with-media なしで書き出した場合）。[/yellow]"
+        )
+    if result.accounts_to_reconnect:
+        console.print(
+            f"  [yellow]連携アカウント {result.accounts_to_reconnect}件は再連携が必要です。"
+            "Web UI の /accounts から連携し直してください。[/yellow]"
+        )
+    for email in result.users_to_reset:
+        console.print(
+            f"  [yellow]{email} のパスワードを再設定してください:[/yellow] "
+            f"snsauto user password {email}"
+        )
+
 
 # ---------------- setup ----------------
 
